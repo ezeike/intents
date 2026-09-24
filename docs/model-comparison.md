@@ -67,3 +67,40 @@ For the architecture in this repo specifically: Laya fits nearly everywhere, sin
 deliberately keep each `classify` node's option count small. Jev would only make more sense by
 abandoning the tree/DAG shape in favor of one wide flat classifier, or to skip owning training/
 infra entirely.
+
+## CLM (Contrastive Language Models)
+
+A third option, from Stanford's Hazy Research lab (Christopher Ré et al.), released Sept 23 2026 —
+[github.com/Contrastive-LM/CLM](https://github.com/Contrastive-LM/CLM). Full research writeup at
+`~/src/research/jev-models/clm-vs-laya/` (produced via the `research` skill). Architecturally
+different from both Laya and Jev: a dual-encoder (frozen Qwen3-8B backbone + small trainable
+projection heads per side) that embeds `state` and each candidate action separately and scores by
+similarity, rather than a single fused classification head. This lets it cache action embeddings
+and rank open-ended/dynamic candidate sets (best-of-N verification, large tool-routing sets) that
+Laya's fixed-`choice` design structurally can't handle — at the cost of a heavier two-service
+deployment (a vLLM pooling encoder plus `clm-serve`) and meaningfully more VRAM (Qwen3-8B needs
+roughly 8-24GB depending on quantization, vs Laya's well-under-2GB footprint).
+
+**Wire protocol is shape-compatible** with Laya/Jev's `/v1/systemone` — same endpoint, same
+`choice`/`score`/`noul` request shapes — but is NOT a safe drop-in swap. Confirmed by actually
+running CLM in place of Laya (same port, identical live requests) rather than just reading docs:
+
+- **CLM's `noul` answers omit `confidence` entirely** — the response is bare `{"type":"noul","noul":p}`,
+  not `{"type":"noul","noul":p,"confidence":c}` like Laya. Any code reading `answers.X.confidence`
+  on a noul question (including this repo's `ActionHandler.MinConfidence` gating) gets nothing back
+  from CLM, not a different number. Fix: derive it client-side —
+  [`examples/adapters.go`](../examples/adapters.go)'s `NoulConfidence(p)` reproduces Laya's own
+  exact formula (`max(p, 1-p)`), restoring a usable signal.
+- **The two models can give meaningfully different judgments on identical input, not just
+  differently-calibrated ones.** Same exact request through both: Laya scored a "how urgent is
+  this?" question at 1.0857/3.0 with confidence 0.116 (spread across levels — leaning "soon" but
+  uncertain); CLM scored the *identical* request at ~0.0000013/3.0 with confidence 0.9999990
+  (near-total certainty it's "not urgent"). This is not a rounding or calibration-formula
+  difference — one model reads the input as moderately urgent-and-uncertain, the other as
+  confidently not urgent. `NoulConfidence` cannot fix this class of gap; any threshold tuned
+  against one model's behavior needs independent re-validation against the other, not just a
+  field-shape adapter.
+
+**Practical guidance**: don't treat a Laya→CLM (or reverse) swap as a config change. Wire shape
+being compatible is necessary but not sufficient — re-run real examples through both and diff the
+actual answers before trusting a swap in anything with a confidence-gated action behind it.
