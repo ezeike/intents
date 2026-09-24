@@ -1,7 +1,13 @@
 // engine.go
 package intents
 
-import "sync"
+import (
+	"context"
+	"fmt"
+	"maps"
+	"slices"
+	"sync"
+)
 
 // Engine walks a validated spec against registered backends. There is no usable zero value —
 // use NewEngine. Engine is safe for concurrent RegisterClassifier/RegisterLookuper/
@@ -63,4 +69,112 @@ func (e *Engine) lookuper(name string) (Lookuper, bool) {
 	defer e.mu.RUnlock()
 	l, ok := e.lookupers[name]
 	return l, ok
+}
+
+// ResolveState validates spec (cached per *Node pointer), checks every referenced backend is
+// registered, then walks spec against input. A cancelled ctx returns a wrapped ctx.Err() with
+// the partial State; any remaining required Failure returns *IncompleteError (unwrapped).
+func (e *Engine) ResolveState(ctx context.Context, spec *Node, input string, callerContext any) (State, error) {
+	if err := e.validateCached(spec); err != nil {
+		return State{}, err
+	}
+	if err := checkBackendsRegistered(e, spec); err != nil {
+		return State{}, err
+	}
+
+	state := State{Input: input, Context: callerContext, Values: make(map[string]Value)}
+	if err := e.walkTree(ctx, spec, &state, spec.Key); err != nil {
+		return state, fmt.Errorf("intents: resolve: %w", err)
+	}
+	state.RiskTier = maxValueRiskTier(state.Values)
+
+	required := make(map[string]bool)
+	collectRequiredPaths(spec, spec.Key, required)
+	if slices.ContainsFunc(state.Failures, func(f Failure) bool { return required[f.Path] }) {
+		// IncompleteError carries every Failure, optional ones included (decision 5).
+		return state, &IncompleteError{State: state}
+	}
+	return state, nil
+}
+
+// validation wraps a cached Validate result so a nil error is distinguishable from a cache miss.
+type validation struct{ err error }
+
+// validateCached runs Validate once per *Node pointer. A concurrent double-miss is benign:
+// Validate is pure, so both computations agree.
+func (e *Engine) validateCached(spec *Node) error {
+	if spec == nil {
+		return Validate(spec)
+	}
+	if v, ok := e.validated.Load(spec); ok {
+		return v.(validation).err
+	}
+	err := Validate(spec)
+	e.validated.Store(spec, validation{err: err})
+	return err
+}
+
+// checkBackendsRegistered walks a validated spec depth-first (Children by sorted key, Slots in
+// declaration order) and reports the first backend reference with no registration.
+func checkBackendsRegistered(e *Engine, spec *Node) error {
+	return checkNodeBackends(e, spec, spec.Key)
+}
+
+func checkNodeBackends(e *Engine, n *Node, path string) error {
+	if err := checkSpecBackends(e, path, n.Classify, n.Lookup); err != nil {
+		return err
+	}
+	for i := range n.Slots {
+		slot := &n.Slots[i]
+		if err := checkSpecBackends(e, path+"."+slot.Name, slot.Classify, slot.Lookup); err != nil {
+			return err
+		}
+	}
+	for _, k := range slices.Sorted(maps.Keys(n.Children)) {
+		c := n.Children[k]
+		if err := checkNodeBackends(e, c, path+"."+c.Key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkSpecBackends(e *Engine, path string, cs *ClassifySpec, ls *LookupSpec) error {
+	if cs != nil {
+		if _, ok := e.classifier(cs.Backend); !ok {
+			return fmt.Errorf("intents: node %q: backend %q: %w", path, cs.Backend, ErrUnregisteredBackend)
+		}
+		if cs.Fallback != nil {
+			ls = cs.Fallback // a classify spec never also carries a Lookup (Validate)
+		}
+	}
+	if ls != nil {
+		if _, ok := e.lookuper(ls.Backend); !ok {
+			return fmt.Errorf("intents: node %q: backend %q: %w", path, ls.Backend, ErrUnregisteredBackend)
+		}
+	}
+	return nil
+}
+
+// collectRequiredPaths records every Failure path that counts as required: every tree node
+// (spec.md R6) and each slot whose SlotSpec.Required is set.
+func collectRequiredPaths(n *Node, path string, required map[string]bool) {
+	required[path] = true
+	for _, slot := range n.Slots {
+		if slot.Required {
+			required[path+"."+slot.Name] = true
+		}
+	}
+	for _, c := range n.Children {
+		collectRequiredPaths(c, path+"."+c.Key, required)
+	}
+}
+
+// maxValueRiskTier returns the highest RiskTier across values (RiskLow when empty).
+func maxValueRiskTier(values map[string]Value) RiskTier {
+	var tier RiskTier
+	for _, v := range values {
+		tier = max(tier, v.RiskTier)
+	}
+	return tier
 }
