@@ -202,6 +202,54 @@ func TestClassify_UnknownChoiceNotInOptionsOrOtherGivesReasonBackendErrorWrappin
 	}
 }
 
+func TestClassify_UndeclaredChoiceWithFallback_UsesFallback(t *testing.T) {
+	e := intents.NewEngine()
+	e.RegisterClassifier("laya", &fakeClassifier{choice: "not_declared", confidence: 1})
+	e.RegisterLookuper("sqllookup", &fakeLookuper{entity: intents.Entity{ID: "e1", Label: "Found"}})
+	root := &intents.Node{
+		Key:  "root",
+		Kind: intents.KindClassify,
+		Classify: &intents.ClassifySpec{
+			Backend:  "laya",
+			Options:  map[string]string{"a": "a"},
+			Fallback: &intents.LookupSpec{Backend: "sqllookup"},
+		},
+	}
+
+	state, err := e.ResolveState(context.Background(), root, "input", nil)
+	if err != nil {
+		t.Fatalf("ResolveState() error = %v, want nil", err)
+	}
+	v := state.Values["root"]
+	if v.Kind != intents.ValueKindEntity || v.Entity == nil || v.Entity.ID != "e1" {
+		t.Fatalf("state.Values[root] = %+v, want entity e1", v)
+	}
+	if len(state.Failures) != 0 {
+		t.Fatalf("state.Failures = %+v, want empty (fallback succeeded)", state.Failures)
+	}
+}
+
+func TestClassify_UndeclaredChoiceWithoutFallback_GivesReasonBackendError(t *testing.T) {
+	e := intents.NewEngine()
+	e.RegisterClassifier("laya", &fakeClassifier{choice: "not_declared", confidence: 1})
+	root := &intents.Node{Key: "root", Kind: intents.KindClassify, Classify: &intents.ClassifySpec{Backend: "laya", Options: map[string]string{"a": "a"}}}
+
+	state, err := e.ResolveState(context.Background(), root, "input", nil)
+	if _, isIncomplete := err.(*intents.IncompleteError); !isIncomplete {
+		t.Fatalf("ResolveState() error = %v (%T), want *IncompleteError", err, err)
+	}
+	f := state.Failures[0]
+	if f.Reason != intents.ReasonBackendError {
+		t.Fatalf("f.Reason = %q, want %q", f.Reason, intents.ReasonBackendError)
+	}
+	if !errors.Is(f.Err, intents.ErrUnknownChoice) {
+		t.Fatalf("f.Err = %v, want errors.Is ErrUnknownChoice", f.Err)
+	}
+	if f.Candidate == nil || f.Candidate.Choice != "not_declared" {
+		t.Fatalf("f.Candidate = %+v, want Choice %q", f.Candidate, "not_declared")
+	}
+}
+
 func TestClassify_ValueHasChoiceKindConfidenceAndSource(t *testing.T) {
 	e := intents.NewEngine()
 	e.RegisterClassifier("laya", &fakeClassifier{choice: "a", confidence: 0.9})

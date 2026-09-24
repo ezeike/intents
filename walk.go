@@ -23,8 +23,13 @@ func (e *Engine) resolveClassify(ctx context.Context, cs *ClassifySpec, input st
 	choice := Value{Kind: ValueKindChoice, Choice: ans.Choice, Confidence: ans.Confidence, Source: cs.Backend}
 	lowConfidence := cs.MinConfidence != 0 && ans.Confidence < cs.MinConfidence
 	reject := ans.Choice == choiceOther
+	_, declared := cs.Options[ans.Choice]
+	undeclared := !declared && !reject
 
-	if lowConfidence || reject {
+	// spec.md R4/R5: the fallback runs first for ANY raw classifier result that doesn't resolve
+	// to a valid, confident, declared choice — low confidence, the literal "other" reject, and an
+	// undeclared choice (a stale option list, a backend bug, schema drift) alike.
+	if lowConfidence || reject || undeclared {
 		if cs.Fallback != nil {
 			// The fallback receives the classify node's grounding: walkTree is the only place a
 			// BuildContext runs, and this signature carries a single grounding value.
@@ -37,12 +42,12 @@ func (e *Engine) resolveClassify(ctx context.Context, cs *ClassifySpec, input st
 		if lowConfidence {
 			return Value{}, &Failure{Reason: ReasonLowConfidence, Candidate: &choice}
 		}
-		return Value{}, &Failure{Reason: ReasonNotFound, Candidate: &choice}
+		if reject {
+			return Value{}, &Failure{Reason: ReasonNotFound, Candidate: &choice}
+		}
+		return Value{}, &Failure{Reason: ReasonBackendError, Err: fmt.Errorf("intents: classify: %w", ErrUnknownChoice), Candidate: &choice}
 	}
 
-	if _, declared := cs.Options[ans.Choice]; !declared {
-		return Value{}, &Failure{Reason: ReasonBackendError, Err: fmt.Errorf("intents: classify: %w", ErrUnknownChoice)}
-	}
 	return choice, nil
 }
 
