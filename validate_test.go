@@ -290,6 +290,25 @@ func TestValidate_SlotDependsOnUnknownSlot_ReturnsErrInvalidSpec(t *testing.T) {
 	}
 }
 
+func TestValidate_SlotDependsOnUnknownSlot_ReportsProblemOnlyOnce(t *testing.T) {
+	classify := &intents.ClassifySpec{Backend: "laya", Options: map[string]string{"a": "opt"}}
+	n := &intents.Node{
+		Key:  "root",
+		Kind: intents.KindSlotDAG,
+		Slots: []intents.SlotSpec{
+			{Name: "amount", Kind: intents.KindClassify, Classify: classify, DependsOn: []string{"nonexistent"}},
+		},
+	}
+	err := intents.Validate(n)
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		t.Fatalf("Validate() = %v (%T), want an errors.Join result", err, err)
+	}
+	if got := len(joined.Unwrap()); got != 1 {
+		t.Fatalf("Validate() joined %d problems, want exactly 1 (the per-slot loop's own report, not also slotWave's)", got)
+	}
+}
+
 func TestValidate_SlotDependsOnSelf_ReturnsErrInvalidSpec(t *testing.T) {
 	classify := &intents.ClassifySpec{Backend: "laya", Options: map[string]string{"a": "opt"}}
 	n := &intents.Node{

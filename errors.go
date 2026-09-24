@@ -26,6 +26,13 @@ type IncompleteError struct {
 	State State
 }
 
+// Error counts and lists every State.Failures entry, not only the required ones that triggered
+// this error (State.Failures is always fully populated — optional misses included, decision 5).
+// This is deliberate, not an oversight: IncompleteError carries no reference to the spec that
+// decided which paths were required, so it cannot filter to required-only without either losing
+// its no-spec-reference construction (see errors_test.go's &IncompleteError{State: ...} literal)
+// or duplicating requiredFailuresIn's spec-walk inside the error type. Callers that need only the
+// required subset re-derive it from State.Failures against their own spec.
 func (e *IncompleteError) Error() string {
 	var paths []string
 	for _, f := range e.State.Failures {

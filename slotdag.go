@@ -15,12 +15,6 @@ type slotResult struct {
 	failure *Failure
 }
 
-// resolveSlotDAG resolves n's slots from the root risk tier: a convenience entry point equal to
-// resolveSlotDAGFrom with RiskLow, paralleling walkTree; not currently called internally.
-func (e *Engine) resolveSlotDAG(ctx context.Context, n *Node, state *State, path string) error {
-	return e.resolveSlotDAGFrom(ctx, n, state, path, RiskLow)
-}
-
 // resolveSlotDAGFrom resolves n.Slots wave by wave (spec.md R7), each wave's slots concurrently,
 // merging results into state in slot declaration order. It returns a non-nil error only for
 // ctx.Err() (or a spec that bypassed Validate); every other miss is recorded in state.Failures.

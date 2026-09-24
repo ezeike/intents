@@ -218,7 +218,10 @@ func (v *validator) checkSlots(at string, n *Node) {
 			}
 		}
 	}
-	if _, err := slotWave(n.Slots); err != nil {
+	// slotWave re-detects an unknown dependency (already reported per-slot above) as a side
+	// effect of building its index; only forward its error when it's the one problem the loop
+	// above can't see — a genuine dependency cycle.
+	if _, err := slotWave(n.Slots); err != nil && errors.Is(err, ErrCyclicSlotDAG) {
 		v.problems = append(v.problems, err)
 	}
 }
