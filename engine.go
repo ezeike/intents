@@ -190,3 +190,25 @@ func maxValueRiskTier(values map[string]Value) RiskTier {
 	}
 	return tier
 }
+
+// Builder converts a resolved State into a caller-typed T. It is a plain function, never
+// reflection — see doc.go's "It does not reflect into caller types".
+type Builder[T any] func(State) (T, error)
+
+// Resolve is the one-shot, caller-facing entry point: ResolveState followed by build. A nil
+// build is a programmer error and panics — it is not special-cased.
+func Resolve[T any](ctx context.Context, e *Engine, spec *Node, input string, callerContext any, build Builder[T]) (T, error) {
+	if build == nil {
+		panic("intents: Resolve: nil build")
+	}
+	var zero T
+	state, err := e.ResolveState(ctx, spec, input, callerContext)
+	if err != nil {
+		return zero, err
+	}
+	t, err := build(state)
+	if err != nil {
+		return zero, fmt.Errorf("intents: build: %w", err)
+	}
+	return t, nil
+}

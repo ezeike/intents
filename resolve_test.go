@@ -109,3 +109,71 @@ func TestResolveState_CancelledDuringBackendCall_ReturnsWrappedContextErrorNotIn
 		t.Fatalf("ResolveState() error is *IncompleteError, want a plain wrapped context error")
 	}
 }
+
+type appAction struct {
+	Key string
+}
+
+func TestResolve_PositivePathBuildsTFromState(t *testing.T) {
+	e := intents.NewEngine()
+	e.RegisterClassifier("laya", &fakeClassifier{choice: "a", confidence: 1})
+	root := &intents.Node{Key: "root", Kind: intents.KindClassify, Classify: &intents.ClassifySpec{Backend: "laya", Options: map[string]string{"a": "a"}}}
+
+	got, err := intents.Resolve(context.Background(), e, root, "input", nil, func(s intents.State) (appAction, error) {
+		return appAction{Key: s.Terminal}, nil
+	})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v, want nil", err)
+	}
+	if got.Key != "root" {
+		t.Fatalf("got.Key = %q, want %q", got.Key, "root")
+	}
+}
+
+func TestResolve_IncompleteGivesZeroTAndIncompleteErrorBuilderNotCalled(t *testing.T) {
+	e := intents.NewEngine()
+	e.RegisterClassifier("laya", &fakeClassifier{choice: "other", confidence: 1})
+	root := &intents.Node{Key: "root", Kind: intents.KindClassify, Classify: &intents.ClassifySpec{Backend: "laya", Options: map[string]string{"a": "a"}}}
+
+	var buildCalled bool
+	got, err := intents.Resolve(context.Background(), e, root, "input", nil, func(s intents.State) (appAction, error) {
+		buildCalled = true
+		return appAction{}, nil
+	})
+	if _, ok := err.(*intents.IncompleteError); !ok {
+		t.Fatalf("Resolve() error = %v (%T), want *IncompleteError", err, err)
+	}
+	if got != (appAction{}) {
+		t.Fatalf("got = %+v, want zero value", got)
+	}
+	if buildCalled {
+		t.Fatalf("build was called despite incomplete resolution")
+	}
+}
+
+func TestResolve_BuilderErrorReturnedWrapped(t *testing.T) {
+	e := intents.NewEngine()
+	e.RegisterClassifier("laya", &fakeClassifier{choice: "a", confidence: 1})
+	root := &intents.Node{Key: "root", Kind: intents.KindClassify, Classify: &intents.ClassifySpec{Backend: "laya", Options: map[string]string{"a": "a"}}}
+	builderErr := errors.New("bad shape")
+
+	_, err := intents.Resolve(context.Background(), e, root, "input", nil, func(s intents.State) (appAction, error) {
+		return appAction{}, builderErr
+	})
+	if !errors.Is(err, builderErr) {
+		t.Fatalf("Resolve() error = %v, want errors.Is builderErr", err)
+	}
+}
+
+func TestResolve_NilBuildPanics(t *testing.T) {
+	e := intents.NewEngine()
+	e.RegisterClassifier("laya", &fakeClassifier{choice: "a", confidence: 1})
+	root := &intents.Node{Key: "root", Kind: intents.KindClassify, Classify: &intents.ClassifySpec{Backend: "laya", Options: map[string]string{"a": "a"}}}
+
+	defer func() {
+		if recover() == nil {
+			t.Fatalf("Resolve() with nil build did not panic")
+		}
+	}()
+	_, _ = intents.Resolve[appAction](context.Background(), e, root, "input", nil, nil)
+}
