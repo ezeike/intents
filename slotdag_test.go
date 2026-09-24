@@ -161,3 +161,39 @@ func TestSlotDAG_TerminalSetToNodeKeyOnceWavesExhausted(t *testing.T) {
 		t.Fatalf("state.Terminal = %q, want %q", state.Terminal, "invite_collaborator")
 	}
 }
+
+func TestSlotDAG_InheritsAncestorRiskTierForAllSlots(t *testing.T) {
+	e := intents.NewEngine()
+	e.RegisterClassifier("laya", &fakeClassifier{choice: "a", confidence: 1})
+	classify := &intents.ClassifySpec{Backend: "laya", Options: map[string]string{"a": "a"}}
+	dag := &intents.Node{
+		Key:      "invite",
+		Kind:     intents.KindSlotDAG,
+		RiskTier: intents.RiskLow,
+		Slots: []intents.SlotSpec{
+			{Name: "invitee", Kind: intents.KindClassify, Classify: classify, Required: true},
+			{Name: "permission", Kind: intents.KindClassify, Classify: classify, Required: true},
+		},
+	}
+	root := &intents.Node{
+		Key:      "root",
+		Kind:     intents.KindClassify,
+		Classify: classify,
+		RiskTier: intents.RiskHigh,
+		Children: map[string]*intents.Node{"a": dag},
+	}
+
+	state, err := e.ResolveState(context.Background(), root, "input", nil)
+	if err != nil {
+		t.Fatalf("ResolveState() error = %v, want nil", err)
+	}
+	for _, name := range []string{"invitee", "permission"} {
+		v, ok := state.Values[name]
+		if !ok {
+			t.Fatalf("state.Values[%q] missing", name)
+		}
+		if v.RiskTier != intents.RiskHigh {
+			t.Fatalf("state.Values[%q].RiskTier = %v, want %v (inherited from ancestor)", name, v.RiskTier, intents.RiskHigh)
+		}
+	}
+}
