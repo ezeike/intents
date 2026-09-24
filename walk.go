@@ -109,6 +109,9 @@ func (e *Engine) walkTreeFrom(ctx context.Context, n *Node, state *State, path s
 	case KindCustom:
 		v, f = e.resolveCustom(ctx, n.Custom, *state)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if f != nil {
 		f.Path = path
