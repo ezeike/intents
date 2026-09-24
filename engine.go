@@ -88,9 +88,7 @@ func (e *Engine) ResolveState(ctx context.Context, spec *Node, input string, cal
 	}
 	state.RiskTier = maxValueRiskTier(state.Values)
 
-	required := make(map[string]bool)
-	collectRequiredPaths(spec, spec.Key, required)
-	if slices.ContainsFunc(state.Failures, func(f Failure) bool { return required[f.Path] }) {
+	if len(requiredFailuresIn(spec, state.Failures)) > 0 {
 		// IncompleteError carries every Failure, optional ones included (decision 5).
 		return state, &IncompleteError{State: state}
 	}
@@ -168,6 +166,20 @@ func collectRequiredPaths(n *Node, path string, required map[string]bool) {
 	for _, c := range n.Children {
 		collectRequiredPaths(c, path+"."+c.Key, required)
 	}
+}
+
+// requiredFailuresIn returns the failures whose Path is required under spec. Shared by
+// ResolveState and ResumeState so both decide IncompleteError identically.
+func requiredFailuresIn(spec *Node, failures []Failure) []Failure {
+	required := make(map[string]bool)
+	collectRequiredPaths(spec, spec.Key, required)
+	var out []Failure
+	for _, f := range failures {
+		if required[f.Path] {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // maxValueRiskTier returns the highest RiskTier across values (RiskLow when empty).
