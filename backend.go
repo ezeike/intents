@@ -1,6 +1,9 @@
 package intents
 
-import "context"
+import (
+	"context"
+	"sort"
+)
 
 // Classifier is a registered backend seam for KindClassify nodes. grounding is the value
 // produced by ClassifySpec.BuildContext (or state.Context verbatim when BuildContext is nil);
@@ -34,4 +37,27 @@ type Entity struct {
 	ID    string
 	Label string
 	Score float64
+}
+
+// TopTwo returns the two highest-probability entries of a.Distribution, sorted by Prob
+// descending then Key ascending on ties. If Distribution has fewer than two entries, the
+// missing slot(s) are the zero Scored{}.
+func (a ChoiceAnswer) TopTwo() (top, second Scored) {
+	scored := make([]Scored, 0, len(a.Distribution))
+	for k, p := range a.Distribution {
+		scored = append(scored, Scored{Key: k, Prob: p})
+	}
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].Prob != scored[j].Prob {
+			return scored[i].Prob > scored[j].Prob
+		}
+		return scored[i].Key < scored[j].Key
+	})
+	if len(scored) > 0 {
+		top = scored[0]
+	}
+	if len(scored) > 1 {
+		second = scored[1]
+	}
+	return top, second
 }
