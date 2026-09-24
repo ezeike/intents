@@ -428,13 +428,40 @@ specActionSpec := &Node{
 }
 ```
 
-The "negative sentiment + a proposal is actually staged ⇒ discard_proposal" rule
-(`resolveSpecAction` in the test file) is a hard rule computed in Go, not a conditional the
-8-way classifier is asked to apply zero-shot — modeled as block-builder's `Builder[T]` inspecting
-`state.Context.(SpecActionContext).HasStagedProposal` plus a narrow preceding `noul`
-`is_negative` question, not as spec-tree structure. `intents` itself doesn't need to know this
-rule exists; it's caller-side composition on top of `Resolve[T]`'s output, same as the
-"General app action" registry dispatch above.
+**The accept/discard resolution rule, updated from an earlier design.** An initial attempt
+(`resolveSpecAction`/`is_negative` in the test file's history) used a single preceding `noul`
+("is this negative?") to catch only the discard side, as a hard Go rule gated on
+`HasStagedProposal` — never asked of the 8-way classifier as a conditional it had to apply
+zero-shot. That version worked but only ever caught `discard_proposal`; live measurement against
+five alternative approaches (bool-flag state, prose state, prose instructions, hierarchical
+decomposition, and a batched referential gate — see `~/.claude/skills/laya/SKILL.md` for the full
+comparison with real accuracy numbers) found a strictly better version, now what
+`spec_action_test.go` actually implements (`askBatched`/`resolveGate`):
+
+- Batch **three** questions into **one** backend request: `spec_action` (the 8-way choice above),
+  `is_referential` (a `noul` — "does this refer back to something already shown to the user?"),
+  and `decision` (a plain `accept`/`reject` `choice`, unrelated to spec vocabulary).
+- Combine in Go: if `HasStagedProposal` (caller-known app state, never asked of the model) **and**
+  `is_referential > 0.4`, trust `decision` (mapped `accept`→`accept_proposal`,
+  `reject`→`discard_proposal`) over `spec_action`'s raw pick; otherwise trust `spec_action`.
+
+Measured on the same 20-phrasing accept/discard test set: **85% (17/20)**, up from 45-60% for
+every state/instructions-grounding variant tried and 20% for hierarchical decomposition — and,
+unlike the earlier `is_negative`-only rule, it catches both the accept and discard sides, not just
+discard. Still caller-side composition, not spec-tree structure — `intents` itself doesn't need to
+know this rule exists, same as the "General app action" registry dispatch above.
+
+**Open design gap this exposes**: the win here specifically depends on batching all three
+questions into *one* backend request (shared token budget, one round trip) — a sequential version
+(ask `is_negative` as a separate call, as the earlier rule did) measurably underperformed. The
+`Classifier` interface as currently drafted (`Classify(ctx, input, context) (ChoiceAnswer, error)`)
+only asks one question per call and has no batching shape. Reproducing this node's actual measured
+behavior through the generic interface isn't possible yet — for now this has to be implemented as
+a `KindCustom` node whose `NodeFunc` makes a raw, adapter-specific batched call directly, bypassing
+`ClassifySpec`/`Classifier` entirely for this one node. Worth resolving before freeze: either widen
+`Classifier` to accept multiple questions in one call, or formally bless "drop to `KindCustom` and
+talk to the adapter directly" as the supported pattern for any node that needs cross-question
+batching.
 
 ## Cut during design (with reasoning, so it isn't re-proposed later)
 
