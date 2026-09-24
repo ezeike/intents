@@ -167,9 +167,6 @@ func (v *validator) checkSlots(at string, n *Node) {
 	for _, s := range n.Slots {
 		names[s.Name] = true
 	}
-	// Slot names extend the node's path to form Failure.Path, so a name equal to a key on that
-	// path (this node's included) is the rule-2 duplicate.
-	pathKeys := append(slices.Clone(v.keys), n.Key)
 	seen := make(map[string]bool, len(n.Slots))
 	for i, s := range n.Slots {
 		subject := fmt.Sprintf("node %q slot %d (%q)", at, i, s.Name)
@@ -180,9 +177,6 @@ func (v *validator) checkSlots(at string, n *Node) {
 			v.addf("%s: slot name duplicated within slot_dag", subject)
 		}
 		seen[s.Name] = true
-		if slices.Contains(pathKeys, s.Name) {
-			v.addf("%s: slot name duplicates a key on its path", subject)
-		}
 
 		switch s.Kind {
 		case KindClassify, KindLookup, KindCustom:

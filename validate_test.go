@@ -213,6 +213,21 @@ func TestValidate_DuplicateSlotName_ReturnsErrInvalidSpec(t *testing.T) {
 	}
 }
 
+// A slot name is checked only for uniqueness among its own node's Slots, never against the tree
+// Keys on its path — so a slot sharing its slot_dag node's Key is valid.
+func TestValidate_SlotNameEqualsNodeKey_ReturnsNil(t *testing.T) {
+	n := &intents.Node{
+		Key:  "amount",
+		Kind: intents.KindSlotDAG,
+		Slots: []intents.SlotSpec{
+			{Name: "amount", Kind: intents.KindClassify, Classify: &intents.ClassifySpec{Backend: "laya", Options: map[string]string{"a": "opt"}}},
+		},
+	}
+	if err := intents.Validate(n); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+}
+
 func TestValidate_SlotDependsOnUnknownSlot_ReturnsErrInvalidSpec(t *testing.T) {
 	classify := &intents.ClassifySpec{Backend: "laya", Options: map[string]string{"a": "opt"}}
 	n := &intents.Node{
