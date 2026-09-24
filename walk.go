@@ -74,7 +74,7 @@ func (e *Engine) walkTreeFrom(ctx context.Context, n *Node, state *State, path s
 		return err
 	}
 	if n.Kind == KindSlotDAG {
-		return e.resolveSlotDAG(ctx, n, state, path)
+		return e.resolveSlotDAGFrom(ctx, n, state, path, effectiveRiskTier(n.RiskTier, ancestorTier))
 	}
 
 	var buildContext func(State) (any, error)

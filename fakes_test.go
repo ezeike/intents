@@ -72,3 +72,32 @@ var (
 	_ intents.Classifier = (*fakeClassifier)(nil)
 	_ intents.Lookuper   = (*fakeLookuper)(nil)
 )
+
+// barrierClassifier blocks every Classify call until n concurrent calls have arrived, then
+// releases them all together — proves concurrent (not serial) execution: a serial caller
+// would deadlock past the test's context timeout.
+type barrierClassifier struct {
+	n       int
+	arrived chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBarrierClassifier(n int) *barrierClassifier {
+	return &barrierClassifier{n: n, arrived: make(chan struct{}, n), release: make(chan struct{})}
+}
+
+func (b *barrierClassifier) Classify(ctx context.Context, input string, grounding any) (intents.ChoiceAnswer, error) {
+	b.arrived <- struct{}{}
+	if len(b.arrived) == b.n {
+		b.once.Do(func() { close(b.release) })
+	}
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+		return intents.ChoiceAnswer{}, ctx.Err()
+	}
+	return intents.ChoiceAnswer{Choice: "a", Confidence: 1}, nil
+}
+
+var _ intents.Classifier = (*barrierClassifier)(nil)
