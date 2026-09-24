@@ -58,6 +58,9 @@ func (e *Engine) ResumeState(ctx context.Context, spec *Node, prior State, answe
 	}
 
 	for _, path := range slices.Sorted(maps.Keys(answers)) {
+		if ans := answers[path]; ans.Value == nil && ans.Raw == "" {
+			continue // an empty Answer answers nothing; its Failure stays (only reachable for exempt ones)
+		}
 		if err := e.applyAnswer(ctx, spec, &state, path, answers[path]); err != nil {
 			return state, fmt.Errorf("intents: resume: %w", err)
 		}
