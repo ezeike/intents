@@ -10,7 +10,8 @@ import (
 )
 
 // Validate checks a spec tree for construction-time errors: bad keys, duplicate keys along a
-// root-to-node path, tree cycles, kind/field mismatches, out-of-range confidences, unreachable
+// root-to-node path, distinct sibling children sharing a Key, slot names equal to an ancestor
+// node's Key, tree cycles, kind/field mismatches, out-of-range confidences, unreachable
 // children, and slot_dag dependency problems. It reports every problem it finds, joined with
 // errors.Join; each wraps ErrInvalidSpec, and a slot_dag dependency cycle also wraps
 // ErrCyclicSlotDAG. Validate never caches — every call re-walks the tree.
@@ -59,9 +60,22 @@ func (v *validator) walk(n *Node) {
 		v.checkKindFields(subject, n.Kind, n.Classify, n.Lookup, len(n.Slots) != 0, n.Custom != nil)
 	}
 
+	// byKey groups distinct sibling pointers by Key: ResumeState addresses a child by Key, so two
+	// different siblings sharing one would be ambiguous. One pointer aliased under two branches is fine.
+	byKey := make(map[string][]*Node, len(n.Children))
 	for _, k := range slices.Sorted(maps.Keys(n.Children)) {
-		if n.Children[k] == nil {
+		c := n.Children[k]
+		if c == nil {
 			v.addf("node %q: child %q is nil", at, k)
+			continue
+		}
+		if !slices.Contains(byKey[c.Key], c) {
+			byKey[c.Key] = append(byKey[c.Key], c)
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(byKey)) {
+		if len(byKey[key]) > 1 {
+			v.addf("node %q: %d distinct children share key %q", at, len(byKey[key]), key)
 		}
 	}
 
@@ -177,6 +191,11 @@ func (v *validator) checkSlots(at string, n *Node) {
 			v.addf("%s: slot name duplicated within slot_dag", subject)
 		}
 		seen[s.Name] = true
+		// State.Values is one flat map, so a slot Name equal to an ancestor's Key would alias its
+		// Value. v.keys excludes n itself: the slot_dag node never writes Values[n.Key].
+		if slices.Contains(v.keys, s.Name) {
+			v.addf("%s: slot name duplicates an ancestor node key", subject)
+		}
 
 		switch s.Kind {
 		case KindClassify, KindLookup, KindCustom:

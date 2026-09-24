@@ -63,6 +63,34 @@ func TestValidate_NodeCycle_ReturnsErrInvalidSpec(t *testing.T) {
 	}
 }
 
+func TestValidate_DuplicateChildKeyAcrossSiblings_ReturnsErrInvalidSpec(t *testing.T) {
+	root := &intents.Node{
+		Key:      "root",
+		Kind:     intents.KindClassify,
+		Classify: &intents.ClassifySpec{Backend: "laya", Options: map[string]string{"a": "opt a", "b": "opt b"}},
+		Children: map[string]*intents.Node{
+			"a": validClassifyLeaf("leaf"),
+			"b": validClassifyLeaf("leaf"), // distinct pointer, same Key as its sibling
+		},
+	}
+	if err := intents.Validate(root); !errors.Is(err, intents.ErrInvalidSpec) {
+		t.Fatalf("Validate() = %v, want errors.Is ErrInvalidSpec", err)
+	}
+}
+
+func TestValidate_SameNodeAliasedUnderTwoBranches_ReturnsNil(t *testing.T) {
+	shared := validClassifyLeaf("leaf")
+	root := &intents.Node{
+		Key:      "root",
+		Kind:     intents.KindClassify,
+		Classify: &intents.ClassifySpec{Backend: "laya", Options: map[string]string{"a": "opt a", "b": "opt b"}},
+		Children: map[string]*intents.Node{"a": shared, "b": shared},
+	}
+	if err := intents.Validate(root); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+}
+
 func TestValidate_UnknownKind_ReturnsErrInvalidSpec(t *testing.T) {
 	n := &intents.Node{Key: "root", Kind: intents.NodeKind("bogus")}
 	if err := intents.Validate(n); !errors.Is(err, intents.ErrInvalidSpec) {
@@ -213,8 +241,8 @@ func TestValidate_DuplicateSlotName_ReturnsErrInvalidSpec(t *testing.T) {
 	}
 }
 
-// A slot name is checked only for uniqueness among its own node's Slots, never against the tree
-// Keys on its path — so a slot sharing its slot_dag node's Key is valid.
+// A slot name may equal its own immediate slot_dag node's Key: that node never writes
+// State.Values under its own Key, so the two cannot collide.
 func TestValidate_SlotNameEqualsNodeKey_ReturnsNil(t *testing.T) {
 	n := &intents.Node{
 		Key:  "amount",
@@ -225,6 +253,26 @@ func TestValidate_SlotNameEqualsNodeKey_ReturnsNil(t *testing.T) {
 	}
 	if err := intents.Validate(n); err != nil {
 		t.Fatalf("Validate() = %v, want nil", err)
+	}
+}
+
+// A slot name equal to a higher ancestor's Key would share that ancestor's State.Values entry.
+func TestValidate_SlotNameEqualsAncestorNodeKey_ReturnsErrInvalidSpec(t *testing.T) {
+	dag := &intents.Node{
+		Key:  "transfer",
+		Kind: intents.KindSlotDAG,
+		Slots: []intents.SlotSpec{
+			{Name: "payments", Kind: intents.KindClassify, Classify: &intents.ClassifySpec{Backend: "laya", Options: map[string]string{"a": "opt"}}},
+		},
+	}
+	root := &intents.Node{
+		Key:      "payments",
+		Kind:     intents.KindClassify,
+		Classify: &intents.ClassifySpec{Backend: "laya", Options: map[string]string{"transfer": "transfer"}},
+		Children: map[string]*intents.Node{"transfer": dag},
+	}
+	if err := intents.Validate(root); !errors.Is(err, intents.ErrInvalidSpec) {
+		t.Fatalf("Validate() = %v, want errors.Is ErrInvalidSpec", err)
 	}
 }
 
