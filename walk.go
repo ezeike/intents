@@ -159,3 +159,20 @@ func (e *Engine) resolveLookup(ctx context.Context, ls *LookupSpec, query string
 	}
 	return Value{Kind: ValueKindEntity, Entity: &entity, Confidence: 0, Source: ls.Backend}, nil
 }
+
+// resolveCustom runs a KindCustom node's NodeFunc (spec.md R5). The returned Value is recorded
+// as-is except that an empty Source defaults to "custom"; RiskTier is set by walkTreeFrom.
+func (e *Engine) resolveCustom(ctx context.Context, fn NodeFunc, state State) (Value, *Failure) {
+	v, err := fn(ctx, state)
+	if err != nil {
+		reason := ReasonBackendError
+		if errors.Is(err, ErrInvalidInput) {
+			reason = ReasonInvalidInput
+		}
+		return Value{}, &Failure{Reason: reason, Err: fmt.Errorf("intents: custom: %w", err)}
+	}
+	if v.Source == "" {
+		v.Source = "custom"
+	}
+	return v, nil
+}
