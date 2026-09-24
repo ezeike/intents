@@ -144,46 +144,12 @@ func TestReferentialGate_ProposalGrid(t *testing.T) {
 	}
 }
 
-// TestReferentialGate_NonProposalCasesUnaffected mirrors
-// TestHierarchicalSpecAction_NonProposalCasesUnaffected -- checks the gate
-// doesn't misfire on unrelated targets when hasStagedProposal is true (a
-// user could still be mid-conversation about a proposal while asking an
-// unrelated question), at both thresholds.
-func TestReferentialGate_NonProposalCasesUnaffected(t *testing.T) {
-	base := requireLaya(t)
-
-	cases := []struct {
-		input string
-		want  string
-	}{
-		{"add a staking transaction type with a minimum lockup of 30 days", "propose_change"},
-		{"just set the chain_id field to canopy-mainnet-1 directly, don't ask the assistant", "direct_edit"},
-		{"is this spec actually valid right now?", "validate"},
-		{"what does the spec look like right now", "fetch_current"},
-		{"what transaction primitives am I allowed to use here", "list_primitives"},
-		{"why would someone even want a bonding curve for a token launch", "general_chat"},
-	}
-	hits := map[float64]int{}
-	gateFired := map[float64]int{}
-	for _, c := range cases {
-		a := askBatched(t, base, c.input)
-		t.Logf("batched(%q): spec_action=%s is_referential=%.3f decision=%s (accept=%.3f reject=%.3f)",
-			c.input, a.specAction.Choice, a.referential.Noul, a.acceptReject.Choice,
-			a.acceptReject.Probabilities["accept"], a.acceptReject.Probabilities["reject"])
-		for _, th := range gateThresholds {
-			choice, viaGate := resolveGate(a, true, th)
-			correct := choice == c.want
-			if correct {
-				hits[th]++
-			}
-			if viaGate {
-				gateFired[th]++
-			}
-			t.Logf("  [threshold=%.1f want=%-16s] -> %-16s (via_gate=%v, correct=%v)", th, c.want, choice, viaGate, correct)
-		}
-	}
-	for _, th := range gateThresholds {
-		t.Logf("== summary non-proposal cases threshold=%.1f: %d/%d correct, gate misfired on %d/%d ==",
-			th, hits[th], len(cases), gateFired[th], len(cases))
-	}
-}
+// TestReferentialGate_NonProposalCasesUnaffected (propose_change, direct_edit,
+// validate, fetch_current, list_primitives, general_chat cases) was removed
+// once spec_action's scope narrowed to a pure accept_proposal/discard_proposal
+// 2-way set (spec_action_test.go) -- there's no other category left for
+// spec_action to answer, so "does the gate misfire on a non-proposal target"
+// no longer has a case to test against. See out_of_scope_detection_test.go
+// for the current version of "does this input belong here at all," which
+// tests genuinely out-of-scope/unrelated input instead of other spec_action
+// categories that no longer exist.

@@ -26,20 +26,16 @@ type calibrationCase struct {
 	input, want string
 }
 
-// calibrationCases combines the six unambiguous non-proposal spec_action
-// cases (single clean gold answer each) with the 20 accept/discard
-// phrasings from proposal_grid_test.go's proposalGridTargets() -- reusing
-// that gold data rather than retyping it, so this file's cases stay in sync
-// with the phrasings already validated elsewhere in the package.
+// calibrationCases is the 20 accept/discard phrasings from
+// proposal_grid_test.go's proposalGridTargets() -- reusing that gold data
+// rather than retyping it, so this file's cases stay in sync with the
+// phrasings already validated elsewhere in the package. Originally also
+// included six non-proposal spec_action cases (propose_change, direct_edit,
+// validate, fetch_current, list_primitives, general_chat); those categories
+// were cut from the whole test suite once spec_action's scope narrowed to
+// accept_proposal/discard_proposal only (spec_action_test.go).
 func calibrationCases() []calibrationCase {
-	cases := []calibrationCase{
-		{"add a staking transaction type with a minimum lockup of 30 days", "propose_change"},
-		{"just set the chain_id field to canopy-mainnet-1 directly, don't ask the assistant", "direct_edit"},
-		{"is this spec actually valid right now?", "validate"},
-		{"what does the spec look like right now", "fetch_current"},
-		{"what transaction primitives am I allowed to use here", "list_primitives"},
-		{"why would someone even want a bonding curve for a token launch", "general_chat"},
-	}
+	var cases []calibrationCase
 	for _, target := range proposalGridTargets() {
 		for _, p := range target.phrasings {
 			cases = append(cases, calibrationCase{input: p, want: target.want})

@@ -1,60 +1,68 @@
 //go:build integration
 
 // Domain-realistic classification: routing free-text SpecDraftChat messages
-// (block-builder's spec-authoring surface) to one of the eight real
-// Spec Authoring RPCs/UI actions, per
-// docs/functionality-tree-block-builder-designer.md and the spec_action
-// worked example from the design conversation.
+// (block-builder's spec-authoring surface) to one of the real Spec Authoring
+// RPCs/UI actions, per docs/functionality-tree-block-builder-designer.md and
+// the spec_action worked example from the design conversation.
+//
+// Scoped to three actions: accept_proposal, discard_proposal, propose_spec
+// (create and send a new proposal -- the option previously named
+// propose_change in the original 8-way design; renamed on reintroduction).
+// direct_edit, validate, fetch_current, list_primitives, and general_chat
+// remain cut from the whole test suite -- not needed for this node's actual
+// production scope, and every one of them acted as noise or a genuine
+// confusable competitor in the wider option sets tested earlier (see the
+// laya skill's reduced-cardinality findings: a plain 2-way
+// accept_proposal/discard_proposal classify, with nothing else in the same
+// call, scored a perfect 20/20 on the hardest terse-referential-command
+// cases that every other approach struggled with). propose_spec was cut
+// alongside them for the same reason, then reinstated: production needs a
+// third outcome distinct from accept/discard -- input that wants a brand
+// new proposal drafted and sent, which must be forwarded to the LLM rather
+// than resolved locally either way.
 //
 // This is a zero-shot baseline, not a contract: `typed-decisions` has never
 // been fine-tuned on this domain, so these tests measure how far the stock
 // checkpoint gets before any training happens, not a guarantee the wire
-// protocol makes. The eight test cases below split into two groups:
+// protocol makes.
 //
-//   - "confident" cases, where the phrasing is unambiguous enough that a
-//     reasonable classifier should get the top choice right zero-shot --
-//     asserted with a hard equality check.
-//   - "ambiguous" cases ("ship it", "make it use segwit instead"), where our
-//     own hand-labeled gold data is itself a split distribution (not 1.0) --
-//     asserted only via TopTwo membership, mirroring the compound-intent
-//     detection pattern from docs/architecture.md, since demanding a single
-//     right answer here would be testing our own labeling confidence, not
-//     the model.
-//
-// Terse referential commands ("commit it", "scratch that") are handled
-// separately, via the batched referential-gate resolver defined in
-// referential_gate_test.go (askBatched, resolveGate, referentialGateThreshold)
-// -- see that file's header for why: four other approaches (bool-flag state,
-// prose state, prose instructions, hierarchical decomposition) were tried
-// first and all either did nothing or made things worse, all recorded in the
-// laya skill. The referential gate is the one that actually worked (85% on
-// the 20-case proposal grid at threshold 0.4, 100% precise whenever it
-// fires), so it's the pattern this file's own accept/discard tests use below.
+// Terse referential commands ("commit it", "scratch that") are handled via
+// the batched referential-gate resolver defined in referential_gate_test.go
+// (askBatched, resolveGate, referentialGateThreshold) -- see that file's
+// header for why: four other approaches (bool-flag state, prose state,
+// prose instructions, hierarchical decomposition) were tried first and all
+// either did nothing or made things worse, all recorded in the laya skill.
+// The referential gate got this case to 85%; reducing spec_action itself to
+// this pure 2-way set (reduced_spec_action_test.go) later got the same
+// cases to 100% with far less machinery -- both remain in the suite since
+// the gate's batching pattern is independently useful (see
+// out_of_scope_detection_test.go), even though it's no longer strictly
+// required for accept/discard accuracy alone.
 package laya_test
 
 import "testing"
 
-// specActionCriteria mirrors the eight-option spec_action classify node from
-// the design conversation's block-builder worked example.
+// specActionCriteria mirrors the spec_action classify node's actual scope:
+// accept_proposal, discard_proposal, propose_spec. Originally an
+// eight-option set (design conversation's block-builder worked example);
+// direct_edit, validate, fetch_current, list_primitives, and general_chat
+// were all cut -- see this file's header. propose_spec is the former
+// propose_change, reinstated under its production name.
 //
 // An earlier version of this file tried lengthening these descriptions with
-// explicit "trigger words" (fix 2 from the design conversation). That
-// regressed two previously-passing cases (fetch_current, general_chat) while
-// only partially helping the case it targeted -- reverted. The reliable fix
-// for the case it was trying to solve is the batched referential gate in
-// referential_gate_test.go: a narrow, separate noul judgment (batched into
-// the same request, not a longer prompt) combined with real Go logic, not a
-// conditional rule asked of the classifier itself.
+// explicit "trigger words" (fix 2 from the design conversation), back when
+// this was still the eight-option set. That regressed two previously-passing
+// cases (fetch_current, general_chat) while only partially helping the case
+// it targeted -- reverted. The reliable fix for the case it was trying to
+// solve is the batched referential gate in referential_gate_test.go: a
+// narrow, separate noul judgment (batched into the same request, not a
+// longer prompt) combined with real Go logic, not a conditional rule asked
+// of the classifier itself.
 func specActionCriteria() map[string]string {
 	return map[string]string{
-		"propose_change":   "propose a new change to the spec, in natural language",
 		"accept_proposal":  "accept/commit the most recently proposed spec",
 		"discard_proposal": "throw away the currently staged proposal",
-		"direct_edit":      "replace the committed spec directly, bypassing the LLM conversation",
-		"validate":         "validate a spec and get back its built IR",
-		"fetch_current":    "fetch the plugin's current committed spec",
-		"list_primitives":  "list the known-audited rule primitives available",
-		"general_chat":     "not spec-related, general conversation about the plugin",
+		"propose_spec":     "propose a new spec change, described in natural language, to be drafted by the assistant",
 	}
 }
 
@@ -101,41 +109,7 @@ func askSpecAction(t *testing.T, base, input string) choiceAnswer {
 	return askSpecActionWithContext(t, base, input, "")
 }
 
-// topTwo returns the two highest-probability keys, matching the compound-
-// intent-detection shape from docs/architecture.md's ChoiceAnswer.TopTwo.
-func topTwo(p map[string]float64) (first, second string) {
-	var firstP, secondP float64
-	for k, v := range p {
-		switch {
-		case v > firstP:
-			second, secondP = first, firstP
-			first, firstP = k, v
-		case v > secondP:
-			second, secondP = k, v
-		}
-	}
-	return first, second
-}
-
-func assertTop2Contains(t *testing.T, a choiceAnswer, want string) {
-	t.Helper()
-	first, second := topTwo(a.Probabilities)
-	if first != want && second != want {
-		t.Errorf("top-2 = [%s, %s], want %q somewhere in there (full distribution: %+v)",
-			first, second, want, a.Probabilities)
-	}
-	t.Logf("input top-2: [%s, %s], full distribution: %+v", first, second, a.Probabilities)
-}
-
 // ---- confident cases: unambiguous phrasing, hard equality assertion ----
-
-func TestSpecAction_NewFeatureRequest_ProposeChange(t *testing.T) {
-	base := requireLaya(t)
-	a := askSpecAction(t, base, "add a staking transaction type with a minimum lockup of 30 days")
-	if a.Choice != "propose_change" {
-		t.Errorf("choice = %q, want %q (distribution: %+v)", a.Choice, "propose_change", a.Probabilities)
-	}
-}
 
 func TestSpecAction_ExplicitCommit_AcceptProposal(t *testing.T) {
 	base := requireLaya(t)
@@ -148,12 +122,6 @@ func TestSpecAction_ExplicitCommit_AcceptProposal(t *testing.T) {
 		t.Errorf("choice = %q, want %q", choice, "accept_proposal")
 	}
 }
-
-// TestSpecAction_ScratchThatGoBack_DiscardProposal used to assert this
-// directly against the 8-way classifier and failed zero-shot (picked
-// direct_edit, then propose_change after fix 2's criteria rewrite). Replaced
-// below by the referential-gate tests, which get this case right by
-// construction rather than hoping the classifier learns the rule zero-shot.
 
 func TestSpecAction_ScratchThatWithStagedProposal_DiscardProposalViaGate(t *testing.T) {
 	base := requireLaya(t)
@@ -192,69 +160,4 @@ func TestSpecAction_ConfirmedWithStagedProposal_ResolvesAccept(t *testing.T) {
 	if choice != "accept_proposal" {
 		t.Errorf("choice = %q, want %q", choice, "accept_proposal")
 	}
-}
-
-func TestSpecAction_DirectlyDontAskAssistant_DirectEdit(t *testing.T) {
-	base := requireLaya(t)
-	a := askSpecAction(t, base, "just set the chain_id field to canopy-mainnet-1 directly, don't ask the assistant")
-	if a.Choice != "direct_edit" {
-		t.Errorf("choice = %q, want %q (distribution: %+v)", a.Choice, "direct_edit", a.Probabilities)
-	}
-}
-
-func TestSpecAction_IsThisValid_Validate(t *testing.T) {
-	base := requireLaya(t)
-	a := askSpecAction(t, base, "is this spec actually valid right now?")
-	if a.Choice != "validate" {
-		t.Errorf("choice = %q, want %q (distribution: %+v)", a.Choice, "validate", a.Probabilities)
-	}
-}
-
-func TestSpecAction_WhatDoesItLookLike_FetchCurrent(t *testing.T) {
-	base := requireLaya(t)
-	a := askSpecAction(t, base, "what does the spec look like right now")
-	if a.Choice != "fetch_current" {
-		t.Errorf("choice = %q, want %q (distribution: %+v)", a.Choice, "fetch_current", a.Probabilities)
-	}
-	// validate is the closest neighbor in this option set (see design conversation) --
-	// log it even on a pass, since a near-tie here is a real signal this pair needs
-	// contrastive fine-tuning data even if today's top-1 happens to be right.
-	t.Logf("fetch_current vs validate margin: fetch_current=%v validate=%v",
-		a.Probabilities["fetch_current"], a.Probabilities["validate"])
-}
-
-func TestSpecAction_WhichPrimitivesCanIUse_ListPrimitives(t *testing.T) {
-	base := requireLaya(t)
-	a := askSpecAction(t, base, "what transaction primitives am I allowed to use here")
-	if a.Choice != "list_primitives" {
-		t.Errorf("choice = %q, want %q (distribution: %+v)", a.Choice, "list_primitives", a.Probabilities)
-	}
-}
-
-func TestSpecAction_OffTopicQuestion_GeneralChat(t *testing.T) {
-	base := requireLaya(t)
-	a := askSpecAction(t, base, "why would someone even want a bonding curve for a token launch")
-	if a.Choice != "general_chat" {
-		t.Errorf("choice = %q, want %q (distribution: %+v)", a.Choice, "general_chat", a.Probabilities)
-	}
-}
-
-// ---- ambiguous cases: our own gold labels are split, so only check top-2 ----
-
-func TestSpecAction_MakeItUseSegwitInstead_ProposeChangeInTop2(t *testing.T) {
-	base := requireLaya(t)
-	a := askSpecAction(t, base, "make it use segwit-style signatures instead")
-	// gold: propose_change 0.85 / direct_edit 0.15 -- "make it X" doesn't say *how*,
-	// so a reasonable classifier could split between "describe a change" and
-	// "edit it for me directly." Both are defensible; propose_change should be
-	// somewhere in the top two regardless of which one wins outright.
-	assertTop2Contains(t, a, "propose_change")
-}
-
-func TestSpecAction_ShipIt_AcceptProposalInTop2(t *testing.T) {
-	base := requireLaya(t)
-	a := askSpecAction(t, base, "ship it")
-	// gold: accept_proposal 0.8 / propose_change 0.2 -- genuinely ambiguous without
-	// knowing whether a proposal is currently staged.
-	assertTop2Contains(t, a, "accept_proposal")
 }

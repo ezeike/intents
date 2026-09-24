@@ -64,6 +64,21 @@ func proposalGridTargets() []proposalGridTarget {
 				"drop the proposal, it's not right",
 			},
 		},
+		{
+			want: "propose_spec",
+			phrasings: []string{
+				"add a staking transaction type with a minimum lockup of 30 days",
+				"make it use segwit-style signatures instead",
+				"can we add support for multi-sig transactions",
+				"propose bumping the block reward to 50 tokens",
+				"I want to change the fee schedule so gas is cheaper",
+				"let's add a new rule primitive for token burns",
+				"switch the consensus mechanism to proof of stake",
+				"propose adding a cooldown period between withdrawals",
+				"what if we capped the max validator count at 100",
+				"draft a change that requires two signatures for governance votes",
+			},
+		},
 	}
 }
 
