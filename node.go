@@ -44,7 +44,8 @@ type ClassifySpec struct {
 }
 
 // LookupSpec configures a KindLookup node: an entity-resolution query against the registered
-// Lookuper named Backend.
+// Lookuper named Backend. A LookupSpec reached only via ClassifySpec.Fallback never has its
+// own BuildContext invoked — the fallback receives the classify node's grounding instead.
 type LookupSpec struct {
 	Backend      string
 	Index        string

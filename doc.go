@@ -95,14 +95,31 @@
 // [Builder] function — simpler mental model, no tag-parsing edge cases, and the caller's struct
 // shape is never a contract this package has to honor across versions.
 //
+// # Cross-question batching
+//
+// [Classifier] stays single-question by design (decision 14) — it is not widened to accept
+// multiple questions in one backend call. A node that needs to batch more than one question
+// into a single backend round trip (e.g. a shared token budget, one request answering several
+// questions at once) uses [KindCustom] with a [NodeFunc] that talks to its adapter directly,
+// bypassing [ClassifySpec]/[Classifier] entirely for that node.
+// tests/integration/laya/spec_action_test.go's askBatched/resolveGate is the reference
+// implementation of this pattern — see [ClassifySpec]'s doc comment for the same note colocated
+// with the type it's most often confused for a use case of.
+//
 // # What's still genuinely not done
 //
-// This package has been designed but not yet implemented or reviewed end to end. In particular:
-// cycle detection for [SlotSpec.DependsOn] (validated at spec-construction time or lazily on
-// first walk — undecided); concurrency limits for slot_dag wave execution; validation timing
-// for [ClassifySpec]/[SlotSpec] (e.g. MinConfidence range, at least one Option); a resumable
-// *session* wrapper beyond the [Engine.ResolveState]/[Engine.ResumeState] split (multi-step
-// wizards, not just single-slot clarification, are a real motivating case — see the design doc);
-// and no tests exist yet. See docs/superpowers/specs/2026-09-24-intents-package-design.md for
-// full design history, including which use cases motivated each decision.
+// Construction-time [Validate], unbounded slot_dag wave concurrency, and a full unit test suite
+// (external intents_test package, no table-driven tests, hand-written fakes) are done — see
+// [Validate], [Engine.ResolveState]'s "How resolution works" behavior, and this module's
+// *_test.go files. What remains genuinely undone: a resumable *session* wrapper beyond the
+// [Engine.ResolveState]/[Engine.ResumeState] split (multi-step wizards, not just single-slot
+// clarification, are a real motivating case — see the design doc); JSON (un)marshaling helpers
+// for [State] (its fields are all exported and serializable in principle, but [Failure.Err]
+// (an error) and [State.Context] (any) need caller-side handling a future session wrapper would
+// own — see [State]'s and [Failure]'s doc comments); the adapter subpackages themselves
+// (intents/laya, intents/jev, intents/sqllookup, vector-store adapters); and [ClassifySpec.Fallback]'s
+// [BuildContext] field, which is intentionally never invoked — per [walkTreeFrom]'s algorithm,
+// the fallback lookup reuses the classify node's own grounding instead. See
+// docs/superpowers/specs/2026-09-24-intents-package-design.md for full design history,
+// including which use cases motivated each decision.
 package intents
