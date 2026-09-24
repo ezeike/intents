@@ -51,6 +51,19 @@ Module: `github.com/ezeike/intents` (single Go module, own git repo, not part of
    the engine (considered, rejected — see below).
 7. **Vector-store support is generic.** `Lookuper` has no Postgres/pgvector-specific anything;
    any vector database is just another `Lookuper` implementation in its own subpackage.
+8. **Situational context is first-class, via `State.Context` + `ClassifySpec`/`LookupSpec.
+   BuildContext`.** A bare `input string` plus static per-node config (`Options`, `Index`) covers
+   most cases (see "Functional update" above — per-request scoping baked into the spec at
+   construction time still works fine and needs no `Context` machinery). But some backend calls
+   need typed, dynamic, often `omitempty`-sensitive grounding the caller can't know until resolve
+   time and can't bake into the spec tree (e.g. "does this conversation currently have a staged
+   proposal?" — see the "Spec action" worked example below). `State.Context` (opaque `any`, set
+   once at `ResolveState`/`Resolve[T]`, unchanged by `Resume`) plus a per-node `BuildContext` hook
+   solves this without widening `Classifier`/`Lookuper` to a fixed shape every backend must adapt
+   to. Rejected alternative: `options map[string]string` — can't express typed non-string fields,
+   and forces every caller to hand-roll zero-value omission (empirically load-bearing: a `false`
+   boolean present-but-zero measurably shifted an unrelated classifier answer vs. the key being
+   omitted entirely).
 
 ## Type definitions (current state)
 
@@ -84,11 +97,30 @@ type ClassifySpec struct {
 	Options       map[string]string
 	MinConfidence float64
 	Fallback      *LookupSpec // tried if Choice == "other" or below MinConfidence (reject-option pattern)
+
+	// BuildContext shapes exactly what this node's backend call receives beyond the bare input
+	// string — situational grounding pulled from state.Context (caller-supplied, set once at
+	// resolve start) and/or state.Values (sibling/ancestor nodes already resolved earlier in a
+	// tree walk). Colocated with Criteria/Options so a node's full backend contract lives in one
+	// place. Nil means "pass state.Context straight through, unmodified" — most nodes don't need
+	// grounding beyond the bare input and shouldn't be forced to write a no-op hook.
+	//
+	// Why this exists: a bare `options map[string]string` can't express a typed, omitempty-
+	// sensitive field (e.g. a bool that must be OMITTED, not sent false, to avoid measurably
+	// shifting an unrelated answer — see intents/tests/integration/laya/spec_action_test.go's
+	// specActionState). Returning `any` lets BuildContext hand the adapter a real Go struct with
+	// its own json tags instead of forcing every caller to hand-roll zero-value omission.
+	BuildContext func(state State) (context any, err error)
 }
 
 type LookupSpec struct {
 	Backend string // registered Lookuper name, e.g. "vectorstore", "sqllookup"
 	Index   string // caller bakes in any per-request scoping (e.g. a doc ID) when constructing the spec
+
+	// BuildContext: same purpose and default-nil behavior as ClassifySpec.BuildContext, for
+	// lookups that need situational grounding beyond the bare query string (e.g. scoping to the
+	// caller's current project/org).
+	BuildContext func(state State) (context any, err error)
 }
 
 // SlotSpec is a DAG vertex. DependsOn is the edge list, referenced by Name (adjacency-list
@@ -112,12 +144,15 @@ type NodeFunc func(ctx context.Context, state State) (Value, error)
 // ---- Backend seams (implemented by adapter subpackages, exported so external packages can
 // satisfy them and the engine's registration API can reference them) ----
 
+// context is the value produced by ClassifySpec.BuildContext (or state.Context verbatim, when
+// BuildContext is nil) — an opaque, backend-shaped payload. The adapter owns marshaling it onto
+// the wire (e.g. the laya adapter JSON-marshals it directly into systemOneRequest.State).
 type Classifier interface {
-	Classify(ctx context.Context, input string, options map[string]string) (ChoiceAnswer, error)
+	Classify(ctx context.Context, input string, context any) (ChoiceAnswer, error)
 }
 
 type Lookuper interface {
-	Lookup(ctx context.Context, query string, index string) (Entity, error)
+	Lookup(ctx context.Context, query string, index string, context any) (Entity, error)
 }
 
 type ChoiceAnswer struct {
@@ -187,6 +222,14 @@ type Failure struct {
 
 type State struct {
 	Input    string             // set once at the start of resolution; unchanged by Resume
+	Context  any                // caller-supplied situational grounding; set once at the start of
+	                              // resolution (same lifecycle as Input — unchanged by Resume). The
+	                              // engine never inspects it; it exists purely for ClassifySpec/
+	                              // LookupSpec.BuildContext (and custom NodeFunc, which already
+	                              // receives the full State) to read from. E.g. block-builder sets
+	                              // this to a struct carrying HasStagedProposal, current org/user,
+	                              // conversation id — anything the engine has no way to derive
+	                              // itself from Input alone.
 	Values   map[string]Value   // every successfully resolved node/slot, keyed by Key/Name
 	Terminal string             // Key of the leaf node reached — set the moment Children == nil
 	Failures []Failure          // ALWAYS populated, required-or-not, even on overall success
@@ -202,7 +245,9 @@ type Engine struct {
 func (e *Engine) RegisterClassifier(name string, c Classifier)
 func (e *Engine) RegisterLookuper(name string, l Lookuper)
 
-func (e *Engine) ResolveState(ctx context.Context, spec *Node, input string) (State, error)
+// callerContext seeds State.Context (see State's field doc) — pass nil when a spec's nodes need
+// no situational grounding beyond the bare input.
+func (e *Engine) ResolveState(ctx context.Context, spec *Node, input string, callerContext any) (State, error)
 
 // Answer is either an already-known Value (caller resolved it themselves, e.g. user picked from
 // a Candidate list — skip re-resolution entirely) or new free text (caller has no picker UI, just
@@ -213,13 +258,15 @@ type Answer struct {
 }
 type Answers map[string]Answer // keyed by Failure.Path
 
+// No separate callerContext param: prior.Context already carries it forward (Context is set once
+// at ResolveState and unchanged thereafter, same as Input).
 func (e *Engine) ResumeState(ctx context.Context, spec *Node, prior State, answers Answers) (State, error)
 
 // ---- Caller-facing entrypoint ----
 
 type Builder[T any] func(State) (T, error)
 
-func Resolve[T any](ctx context.Context, e *Engine, spec *Node, input string, build Builder[T]) (T, error)
+func Resolve[T any](ctx context.Context, e *Engine, spec *Node, input string, callerContext any, build Builder[T]) (T, error)
 
 // ---- Errors ----
 
@@ -345,6 +392,49 @@ with `Params`.
 Full sequence trace (classify → descend → slot_dag wave resolution → Terminal set →
 builder called → caller dispatch) is captured in the design conversation; worth lifting into a
 proper "how resolution works" doc section before this spec is frozen.
+
+### 4. Spec action (block-builder integration, `Context`/`BuildContext` motivating case)
+
+Routes free-text `SpecDraftChat` input to one of block-builder's eight spec-authoring
+RPCs/UI actions (`docs/functionality-tree-block-builder-designer.md`). Zero-shot baseline
+prototyped directly against Laya in `intents/tests/integration/laya/spec_action_test.go`
+(`specActionCriteria`, `specActionState`) before this `Context`/`BuildContext` mechanism existed
+in the core package — that test file is the reference behavior this Node/Builder must reproduce.
+
+```go
+type SpecActionContext struct {
+	HasStagedProposal bool // omit, don't send false — see decision 8 above
+}
+
+specActionSpec := &Node{
+	Key: "spec_action", Kind: KindClassify,
+	Classify: &ClassifySpec{
+		Backend: "laya",
+		Options: map[string]string{
+			"propose_change":   "propose a new change to the spec, in natural language",
+			"accept_proposal":  "accept/commit the most recently proposed spec",
+			"discard_proposal": "throw away the currently staged proposal",
+			"direct_edit":      "replace the committed spec directly, bypassing the LLM conversation",
+			"validate":         "validate a spec and get back its built IR",
+			"fetch_current":    "fetch the plugin's current committed spec",
+			"list_primitives":  "list the known-audited rule primitives available",
+			"general_chat":     "not spec-related, general conversation about the plugin",
+		},
+		BuildContext: func(state State) (any, error) {
+			ctx, _ := state.Context.(SpecActionContext) // zero value if caller passed nil
+			return ctx, nil
+		},
+	},
+}
+```
+
+The "negative sentiment + a proposal is actually staged ⇒ discard_proposal" rule
+(`resolveSpecAction` in the test file) is a hard rule computed in Go, not a conditional the
+8-way classifier is asked to apply zero-shot — modeled as block-builder's `Builder[T]` inspecting
+`state.Context.(SpecActionContext).HasStagedProposal` plus a narrow preceding `noul`
+`is_negative` question, not as spec-tree structure. `intents` itself doesn't need to know this
+rule exists; it's caller-side composition on top of `Resolve[T]`'s output, same as the
+"General app action" registry dispatch above.
 
 ## Cut during design (with reasoning, so it isn't re-proposed later)
 
