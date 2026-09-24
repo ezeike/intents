@@ -1,8 +1,9 @@
 # `intents` package design
 
-> **Status: scratch / in progress.** This captures everything worked out in the design
-> conversation so far. It is NOT frozen, has not been through spec self-review, and has open
-> questions called out explicitly at the bottom. Do not hand this to `/forge init` yet.
+> **Status: design finalized, pending human review.** All open questions from the prior draft
+> have been resolved (see "Resolved during design finalization" at the bottom, replacing the old
+> "Open questions" section) and folded into the relevant sections above. Spec self-review has been
+> run. Awaiting the human's read-through before handoff to `/forge init`.
 
 ## Purpose
 
@@ -64,6 +65,49 @@ Module: `github.com/ezeike/intents` (single Go module, own git repo, not part of
    and forces every caller to hand-roll zero-value omission (empirically load-bearing: a `false`
    boolean present-but-zero measurably shifted an unrelated classifier answer vs. the key being
    omitted entirely).
+9. **`Engine` requires a constructor, not a zero-value struct.** `NewEngine()` returns a ready-to-use
+   `*Engine` with its `classifiers`/`lookupers` maps allocated. A zero-value `Engine` would panic on
+   the first `RegisterClassifier`/`RegisterLookuper` call unless every such method carried lazy-init
+   nil-checking — standard Go convention for a struct with internal maps wins over marginal
+   zero-value ergonomics.
+10. **Spec validation — cycles and field checks together, at construction time.** One
+    `Validate(spec *Node) error` walks the whole tree once and reports every structural problem: a
+    `slot_dag` cycle in `DependsOn`, `ClassifySpec.MinConfidence` outside `[0,1]`, a `ClassifySpec`/
+    `SlotSpec` with no `Options`/no slots, an unreachable `Children` entry, etc. Callers run it once
+    after building a spec (or the engine runs it automatically the first time a given `*Node`
+    pointer reaches `ResolveState`, caching the result keyed by pointer identity so repeat calls
+    don't re-walk). A bad spec never reaches resolution — no separate "lazy, first-use" validation
+    path to reason about alongside it.
+11. **Wave execution in `slot_dag` is unbounded per wave.** Every slot in a topological level
+    resolves concurrently with no engine-level cap (`errgroup.Group`, no semaphore). Waves are
+    bounded by how many slots a spec author put in one DAG level — a spec-authoring decision, not
+    request volume — and any real rate-limiting belongs to the backend adapter (Laya/Jev/sqllookup/
+    vector-store client), matching "mechanism here, policy at the call site." No `MaxConcurrency`
+    knob on `Engine`.
+12. **`ResumeState` only re-resolves what `Answers` targets.** Answering a slot via `Answer.Raw`/
+    `Answer.Value` re-runs exactly the nodes/slots named by `Answers` (keyed by `Failure.Path`) plus
+    anything newly unblocked by those answers (e.g. a `slot_dag` slot whose `DependsOn` is now
+    satisfied) — it never re-opens a wave that already produced a `Value` for an unrelated slot,
+    even if that slot's "correct" answer could theoretically depend on the newly-answered one.
+    Matches "`State` is a checkpoint, not a recompute": a slot that failed for an unrelated reason
+    stays failed until the caller explicitly answers it too. No dependency-invalidation tracking.
+13. **Testing strategy: same conventions as the sibling `packages/go` tree**, even though `intents`
+    is its own module/repo — `intents_test` external package, hand-written fakes (`fakeClassifier`,
+    `fakeLookuper`; no mocking framework), one behavior per
+    `Test<Subject>_<Condition>_<Outcome>` function, no table-driven tests, negative invariants
+    (cycle detected, low confidence, backend error, unresolved `DependsOn`, incomplete `Answers` on
+    `ResumeState`) as first-class named tests, not rows in a shared table.
+14. **`Classifier` stays single-question; cross-question batching is a documented `KindCustom`
+    escape hatch, not a widened interface.** The spec_action worked example's measured-best
+    resolution rule (`askBatched`/`resolveGate` — see below) needs one backend request answering
+    three questions in a shared token budget; `Classifier.Classify(ctx, input, context)` asks only
+    one. Rather than widen the core interface for a need demonstrated once so far (batching is
+    inherently backend-specific — shared token budget, one round trip — so it doesn't generalize
+    cleanly), `doc.go` and `ClassifySpec`'s doc comment formally bless dropping to `KindCustom` with
+    a `NodeFunc` that talks to its adapter directly, bypassing `ClassifySpec`/`Classifier` entirely,
+    as the supported pattern for any node needing cross-question batching.
+    `spec_action_test.go`'s `askBatched`/`resolveGate` is the reference implementation of this
+    pattern.
 
 ## Type definitions (current state)
 
@@ -239,11 +283,22 @@ type State struct {
 // ---- Engine ----
 
 type Engine struct {
-	// classifiers, lookupers map[string]... — registered via:
+	// classifiers, lookupers map[string]... — allocated by NewEngine, populated via Register*.
 }
+
+// NewEngine returns a ready-to-use *Engine. There is no zero-value-usable Engine — Register*
+// requires its maps allocated.
+func NewEngine() *Engine
 
 func (e *Engine) RegisterClassifier(name string, c Classifier)
 func (e *Engine) RegisterLookuper(name string, l Lookuper)
+
+// Validate walks the whole spec tree once and reports every structural problem: a slot_dag
+// dependency cycle, a ClassifySpec/SlotSpec with no Options/no slots, MinConfidence outside
+// [0,1], etc. Call it once after building a spec — ResolveState also runs it automatically the
+// first time a given *Node pointer is seen, caching the result by pointer identity, so a spec
+// built once and reused across calls is validated once, not per-call.
+func Validate(spec *Node) error
 
 // callerContext seeds State.Context (see State's field doc) — pass nil when a spec's nodes need
 // no situational grounding beyond the bare input.
@@ -274,6 +329,16 @@ type IncompleteError struct {
 	State State
 }
 func (e *IncompleteError) Error() string
+
+// Sentinel errors, one block in errors.go, wrapped via fmt.Errorf("intents: ...: %w", ...) so
+// callers use errors.Is. IncompleteError stays a distinct exported struct (not a sentinel) because
+// it carries State — callers errors.As into it to recover the checkpoint for ResumeState.
+var (
+	ErrCyclicSlotDAG       = errors.New("intents: slot_dag contains a dependency cycle")
+	ErrInvalidSpec         = errors.New("intents: spec failed validation")
+	ErrUnregisteredBackend = errors.New("intents: no Classifier/Lookuper registered under this name")
+	ErrUnansweredFailure   = errors.New("intents: resume answers do not cover all required failures")
+)
 ```
 
 ## Node kinds — plain name, CS term, meaning
@@ -293,6 +358,51 @@ Note: a single `Node` tree can freely mix kinds — e.g. a `classify` descent wh
 `slot_dag` node. Each node dispatches on its own `Kind` independently; there is no
 requirement that a whole spec be one uniform shape (architecture.md §6, "heterogeneous node
 types").
+
+## How resolution works
+
+`ResolveState` walks `spec` starting at the root `Node`:
+
+1. **Dispatch on `Node.Kind`.**
+   - `classify`: call the registered `Classifier` (via `ClassifySpec.Backend`) with `state.Input`
+     and the context produced by `ClassifySpec.BuildContext(state)` (or `state.Context` verbatim if
+     `BuildContext` is nil). If the answer is below `MinConfidence` or lands on the reject option
+     and `Fallback` is set, try the fallback `LookupSpec` instead. Record the result as a `Value` in
+     `state.Values` keyed by `Node.Key`. If `Children[choice]` exists, descend into it and repeat
+     step 1 from there; otherwise this node is a leaf — set `state.Terminal = Node.Key` and stop
+     descending.
+   - `lookup`: call the registered `Lookuper` (via `LookupSpec.Backend`) with `state.Input`,
+     `LookupSpec.Index`, and the `BuildContext` result. Record the `Entity` as a `Value`. Same
+     `Children`/`Terminal` handling as `classify`.
+   - `slot_dag`: compute topological levels ("waves") over `Slots` from their `DependsOn` edges
+     (already validated cycle-free by `Validate`). Resolve every slot in a wave concurrently
+     (unbounded), advance wave-by-wave once a level completes. A slot resolves the same way a
+     `classify`/`lookup`/`custom` node would, individually. Once every `Required` slot has a `Value`
+     (or the DAG is exhausted with unresolved required slots left over), set
+     `state.Terminal = Node.Key`.
+   - `custom`: invoke `Node.Custom(ctx, state)` directly — the `NodeFunc` owns its own backend
+     calls entirely (this is the mechanism used for cross-question-batched nodes like `spec_action`
+     — see decision 14 above). Its returned `Value` is recorded the same way; `Children`/`Terminal`
+     handling is unchanged.
+2. **Every reached value lands in `state.Values`.** Every miss — low confidence, not-found,
+   backend error, invalid custom input, or a `slot_dag` required slot whose `DependsOn` never got
+   satisfied — becomes a `Failure` in `state.Failures` (always populated, even on an otherwise
+   successful resolution, per decision 5), carrying `Reason` and a best-effort `Candidate` when one
+   exists (e.g. the top choice that fell below `MinConfidence`).
+3. **Resolution stops, it doesn't error, the moment a required node/slot can't be satisfied.**
+   `ResolveState` returns the accumulated `State` wrapped in `*IncompleteError` so the caller can
+   collect `Answers` for the unresolved `Failure.Path`s and call `ResumeState` — which re-resolves
+   only what `Answers` targets plus anything newly unblocked by them (decision 12), never
+   re-opening a wave that already produced an unrelated `Value`.
+
+**Worked trace** ("General app action" example above): `"invite bob@company.com as an editor"` →
+root `classify` picks `app_action` → descends into the `app_action` hierarchical classify tree →
+picks `collaboration` → descends to `invite_collaborator`, a `slot_dag` leaf with two independent
+slots (`invitee` via `sqllookup.Lookup`, `permission` via `classify`), both in wave 1 since neither
+`DependsOn` the other → both resolve concurrently → `state.Terminal = "invite_collaborator"` →
+`Resolve[T]`'s `Builder` reads `state.Values["invitee"]`/`state.Values["permission"]` into an
+`AppAction{Key: "invite_collaborator", Params: ...}` → caller looks up
+`registry["invite_collaborator"]` and dispatches.
 
 ## Package layout
 
@@ -485,22 +595,39 @@ batching.
 - **Postgres/pgvector-specific naming.** `Lookuper` was always backend-agnostic; corrected the
   package layout to not privilege one vector-store vendor as "the" adapter.
 
-## Open questions (not yet decided — scratch doc)
+## Resolved during design finalization (2026-09-24)
 
-- Exact `Engine` internal fields (`classifiers`/`lookupers` maps) and constructor shape
-  (`NewEngine()` vs. zero-value-usable struct).
-- Sentinel `Err*` variables for `errors.go` — not yet enumerated.
-- Cycle detection in `slot_dag` nodes: validated at spec-construction time, or lazily at
-  first `ResolveState` walk? Needs a decision before `errors.go` can be finalized.
-- Concurrency limits for wave execution in `slot_dag` (unbounded goroutines per wave vs.
-  a cap) — not discussed yet.
-- Whether `ClassifySpec`/`SlotSpec` validation (e.g. `MinConfidence` in `[0,1]`, at least one
-  `Option`) happens at spec-construction or first-use.
+All items previously listed here as open are now decided and folded into "Core design decisions"
+(9-14) and their corresponding sections above:
+
+- ~~Exact `Engine` internal fields and constructor shape~~ — `NewEngine()`, decision 9.
+- ~~Sentinel `Err*` variables for `errors.go`~~ — enumerated, see the type definitions section.
+- ~~Cycle detection timing~~ — construction-time, decision 10.
+- ~~Concurrency limits for wave execution~~ — unbounded per wave, decision 11.
+- ~~`ClassifySpec`/`SlotSpec` validation timing~~ — construction-time, folded into decision 10's
+  single `Validate` pass.
 - ~~`doc.go` content~~ — written, see `/doc.go` at module root.
-- Testing strategy for the engine itself — not discussed at all yet.
-- Whether `ResumeState`'s dependency-graph re-entry needs to re-run downstream waves that depended
-  on a slot being answered via `Answer.Raw` (i.e., does answering `token` via Resume need to
-  re-open `amount`'s wave if `amount` had already failed for an unrelated reason) — not walked
-  through.
-- Full "how resolution works" narrative section (referenced above) — currently only exists as a
-  worked trace in conversation, not written into this doc.
+- ~~Testing strategy for the engine itself~~ — same conventions as `packages/go`, decision 13.
+- ~~`ResumeState`'s dependency-graph re-entry scope~~ — targets `Answers` only, no cascade,
+  decision 12.
+- ~~Full "how resolution works" narrative section~~ — written, see that section above.
+- ~~`Classifier` batching gap for `spec_action`~~ — `KindCustom` blessed as the supported escape
+  hatch, decision 14.
+
+No open questions remain. Spec self-review (below) has been run against this revision.
+
+## Spec self-review
+
+- **Placeholder scan:** no `TBD`/`TODO` remain; every section above has concrete content.
+- **Internal consistency:** `Engine.RegisterClassifier`/`RegisterLookuper` now presuppose
+  `NewEngine()`-allocated maps (decision 9) — consistent with the `Engine` struct's own comment.
+  `Validate`'s construction-time timing (decision 10) is consistent with `ResolveState`'s "How
+  resolution works" step 1, which assumes cycle-freedom before computing topological waves.
+  `ResumeState`'s signature and decision 12's no-cascade scope agree.
+- **Scope check:** still one cohesive package (engine + spec types + backend seams) with adapters
+  correctly pushed to subpackages; no drift into adapter-specific concerns in the core module's
+  type definitions.
+- **Ambiguity check:** `Validate`'s caching behavior ("first time a given `*Node` pointer is seen")
+  is now explicit rather than implied, resolving a possible double-validation-cost ambiguity.
+  `KindCustom` as the batching escape hatch is now documented as a *formally supported* pattern,
+  not just a workaround the spec_action example happened to use.
