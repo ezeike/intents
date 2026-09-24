@@ -110,16 +110,15 @@
 //
 // Construction-time [Validate], unbounded slot_dag wave concurrency, and a full unit test suite
 // (external intents_test package, no table-driven tests, hand-written fakes) are done — see
-// [Validate], [Engine.ResolveState]'s "How resolution works" behavior, and this module's
-// *_test.go files. What remains genuinely undone: a resumable *session* wrapper beyond the
+// [Validate], [Engine.ResolveState], and this module's *_test.go files. What remains genuinely undone: a resumable *session* wrapper beyond the
 // [Engine.ResolveState]/[Engine.ResumeState] split (multi-step wizards, not just single-slot
 // clarification, are a real motivating case — see the design doc); JSON (un)marshaling helpers
 // for [State] (its fields are all exported and serializable in principle, but [Failure.Err]
 // (an error) and [State.Context] (any) need caller-side handling a future session wrapper would
 // own — see [State]'s and [Failure]'s doc comments); the adapter subpackages themselves
 // (intents/laya, intents/jev, intents/sqllookup, vector-store adapters); and [ClassifySpec.Fallback]'s
-// [BuildContext] field, which is intentionally never invoked — per [walkTreeFrom]'s algorithm,
-// the fallback lookup reuses the classify node's own grounding instead. See
+// [LookupSpec.BuildContext] field, which is currently ignored — the engine's tree walk has the
+// fallback lookup reuse the classify node's own grounding instead. See
 // docs/superpowers/specs/2026-09-24-intents-package-design.md for full design history,
 // including which use cases motivated each decision.
 package intents

@@ -12,6 +12,12 @@ import (
 // Engine walks a validated spec against registered backends. There is no usable zero value —
 // use NewEngine. Engine is safe for concurrent RegisterClassifier/RegisterLookuper/
 // ResolveState/ResumeState calls.
+//
+// An Engine caches each spec's Validate result keyed by its root *Node pointer. Treat a spec as
+// immutable after its first use with a given Engine: a later mutation is never re-validated and
+// may cause a panic or a wrong error on that pointer's subsequent calls. The cache never evicts,
+// so a caller building a fresh spec per request grows it without bound — build specs once and
+// reuse the pointer.
 type Engine struct {
 	mu          sync.RWMutex
 	classifiers map[string]Classifier

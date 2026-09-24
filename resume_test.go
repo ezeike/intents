@@ -222,3 +222,59 @@ func TestResumeState_InputAndContextUnchanged(t *testing.T) {
 		t.Fatalf("state.Input/Context = %q/%v, want unchanged", state.Input, state.Context)
 	}
 }
+
+func TestResumeState_RawReRunOfCustomNodeOverwritesReturnedRiskTier(t *testing.T) {
+	calls := 0
+	root := &intents.Node{
+		Key:      "root",
+		Kind:     intents.KindCustom,
+		RiskTier: intents.RiskMedium,
+		Custom: func(ctx context.Context, state intents.State) (intents.Value, error) {
+			calls++
+			if calls == 1 {
+				return intents.Value{}, intents.ErrInvalidInput
+			}
+			return intents.Value{Kind: intents.ValueKindChoice, Choice: "x", RiskTier: intents.RiskCritical}, nil
+		},
+	}
+	e := intents.NewEngine()
+	prior, _ := e.ResolveState(context.Background(), root, "input", nil)
+
+	state, err := e.ResumeState(context.Background(), root, prior, intents.Answers{"root": {Raw: "clarified"}})
+	if err != nil {
+		t.Fatalf("ResumeState() error = %v, want nil", err)
+	}
+	if got := state.Values["root"].RiskTier; got != intents.RiskMedium {
+		t.Fatalf("state.Values[root].RiskTier = %v, want %v (computed tier, not NodeFunc's)", got, intents.RiskMedium)
+	}
+}
+
+func TestResumeState_CancelledRawReRunKeepsAnsweredFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	root := &intents.Node{
+		Key:  "root",
+		Kind: intents.KindCustom,
+		Custom: func(context.Context, intents.State) (intents.Value, error) {
+			calls++
+			if calls == 2 {
+				cancel()
+			}
+			return intents.Value{}, intents.ErrInvalidInput
+		},
+	}
+	e := intents.NewEngine()
+	prior, _ := e.ResolveState(context.Background(), root, "input", nil)
+
+	state, err := e.ResumeState(ctx, root, prior, intents.Answers{"root": {Raw: "clarified"}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ResumeState() error = %v, want errors.Is context.Canceled", err)
+	}
+	if len(state.Failures) != 1 || state.Failures[0].Path != "root" {
+		t.Fatalf("state.Failures = %+v, want the answered Failure at %q kept", state.Failures, "root")
+	}
+	if _, err := e.ResumeState(context.Background(), root, state, intents.Answers{"root": {Raw: "again"}}); errors.Is(err, intents.ErrUnknownAnswerPath) {
+		t.Fatalf("retry ResumeState() error = %v, want the partial State to remain resumable", err)
+	}
+}

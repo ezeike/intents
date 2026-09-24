@@ -7,12 +7,16 @@ import (
 
 // Classifier is a registered backend seam for KindClassify nodes. grounding is the value
 // produced by ClassifySpec.BuildContext (or state.Context verbatim when BuildContext is nil);
-// it is opaque here — the adapter owns marshaling it onto the wire.
+// it is opaque here — the adapter owns marshaling it onto the wire. Classify may be called
+// concurrently from different goroutines during slot_dag wave execution, so implementations
+// must be safe for concurrent use.
 type Classifier interface {
 	Classify(ctx context.Context, input string, grounding any) (ChoiceAnswer, error)
 }
 
-// Lookuper is a registered backend seam for KindLookup nodes.
+// Lookuper is a registered backend seam for KindLookup nodes. Lookup may be called concurrently
+// from different goroutines during slot_dag wave execution, so implementations must be safe for
+// concurrent use.
 type Lookuper interface {
 	Lookup(ctx context.Context, query string, index string, grounding any) (Entity, error)
 }

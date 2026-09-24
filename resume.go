@@ -80,7 +80,7 @@ func (e *Engine) applyAnswer(ctx context.Context, spec *Node, state *State, path
 	if err != nil {
 		return err
 	}
-	state.Failures = slices.DeleteFunc(state.Failures, func(f Failure) bool { return f.Path == path })
+	answered := func(f Failure) bool { return f.Path == path }
 
 	// target is the single-node view resolveSlot dispatches on, for a tree node or a slot alike.
 	var (
@@ -101,23 +101,25 @@ func (e *Engine) applyAnswer(ctx context.Context, spec *Node, state *State, path
 	var v Value
 	if ans.Value != nil {
 		v = *ans.Value
+		v.RiskTier = effectiveRiskTier(v.RiskTier, tier)
 	} else {
 		callState := *state
 		callState.Input = ans.Raw
 		callState.Values = cloneValues(state.Values)
-		callState.Failures = slices.Clone(state.Failures)
+		callState.Failures = slices.DeleteFunc(slices.Clone(state.Failures), answered)
 		var f *Failure
 		v, f = e.resolveSlot(ctx, target, callState)
 		if err := ctx.Err(); err != nil {
-			return err
+			return err // the answered Failure stays, so the partial State can be resumed again
 		}
 		if f != nil {
 			f.Path = path
-			state.Failures = append(state.Failures, *f)
+			state.Failures = append(slices.DeleteFunc(state.Failures, answered), *f)
 			return nil // a re-run miss is recorded, not returned; nothing downstream is unblocked
 		}
+		v.RiskTier = tier // like every other backend-resolution path, the computed tier wins
 	}
-	v.RiskTier = effectiveRiskTier(v.RiskTier, tier)
+	state.Failures = slices.DeleteFunc(state.Failures, answered)
 	state.Values[targetKey] = v
 
 	if node != nil {
@@ -197,8 +199,8 @@ func resolvePathToNode(spec *Node, path string) (node *Node, slot *SlotSpec, slo
 	return cur, nil, nil, nil
 }
 
-// childByKey returns n's child whose Key is key, scanning Children in sorted map-key order so a
-// (Validate-permitted) duplicate Key resolves deterministically.
+// childByKey returns n's child whose Key is key. Validate rejects distinct siblings sharing a
+// Key, so at most one child pointer can match.
 func childByKey(n *Node, key string) *Node {
 	for _, k := range slices.Sorted(maps.Keys(n.Children)) {
 		if c := n.Children[k]; c != nil && c.Key == key {

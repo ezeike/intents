@@ -20,8 +20,8 @@ func TestIncompleteError_Error_FormatsRequiredFailurePaths(t *testing.T) {
 
 	got := err.Error()
 
-	if !strings.HasPrefix(got, "intents: resolution incomplete: 2 required failure(s): ") {
-		t.Fatalf("Error() = %q, want prefix %q", got, "intents: resolution incomplete: 2 required failure(s): ")
+	if !strings.HasPrefix(got, "intents: resolution incomplete: 2 failure(s): ") {
+		t.Fatalf("Error() = %q, want prefix %q", got, "intents: resolution incomplete: 2 failure(s): ")
 	}
 	if !strings.Contains(got, "transfer.amount") || !strings.Contains(got, "transfer.recipient") {
 		t.Fatalf("Error() = %q, want it to contain both failure paths", got)

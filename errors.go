@@ -31,5 +31,5 @@ func (e *IncompleteError) Error() string {
 	for _, f := range e.State.Failures {
 		paths = append(paths, f.Path)
 	}
-	return fmt.Sprintf("intents: resolution incomplete: %d required failure(s): %s", len(paths), strings.Join(paths, ", "))
+	return fmt.Sprintf("intents: resolution incomplete: %d failure(s): %s", len(paths), strings.Join(paths, ", "))
 }

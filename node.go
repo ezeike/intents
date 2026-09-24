@@ -35,6 +35,9 @@ type Node struct {
 // directly, bypassing ClassifySpec/Classifier entirely.
 // tests/integration/laya/spec_action_test.go's askBatched/resolveGate is the reference
 // implementation of this pattern.
+//
+// BuildContext may be called concurrently from different goroutines during slot_dag wave
+// execution (one call per slot in a wave), so it must be safe for concurrent use.
 type ClassifySpec struct {
 	Backend       string
 	Options       map[string]string
@@ -46,6 +49,8 @@ type ClassifySpec struct {
 // LookupSpec configures a KindLookup node: an entity-resolution query against the registered
 // Lookuper named Backend. A LookupSpec reached only via ClassifySpec.Fallback never has its
 // own BuildContext invoked — the fallback receives the classify node's grounding instead.
+// BuildContext may be called concurrently from different goroutines during slot_dag wave
+// execution, so it must be safe for concurrent use.
 type LookupSpec struct {
 	Backend      string
 	Index        string
@@ -65,5 +70,7 @@ type SlotSpec struct {
 }
 
 // NodeFunc is the KindCustom escape valve. It receives State (which already carries Input),
-// not a bare string, so it can read Context and previously-resolved Values.
+// not a bare string, so it can read Context and previously-resolved Values. A NodeFunc may be
+// called concurrently from different goroutines during slot_dag wave execution, so it must be
+// safe for concurrent use.
 type NodeFunc func(ctx context.Context, state State) (Value, error)

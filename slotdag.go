@@ -15,7 +15,8 @@ type slotResult struct {
 	failure *Failure
 }
 
-// resolveSlotDAG resolves n's slots from the root risk tier.
+// resolveSlotDAG resolves n's slots from the root risk tier: a convenience entry point equal to
+// resolveSlotDAGFrom with RiskLow, paralleling walkTree; not currently called internally.
 func (e *Engine) resolveSlotDAG(ctx context.Context, n *Node, state *State, path string) error {
 	return e.resolveSlotDAGFrom(ctx, n, state, path, RiskLow)
 }
