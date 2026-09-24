@@ -149,6 +149,46 @@ func TestResumeState_UnrelatedResolvedSlotIsNotReRun(t *testing.T) {
 	}
 }
 
+func TestResumeState_ExplicitAnswerInSameBatchAsUnblockingAnswer_WinsOverAutoResolution(t *testing.T) {
+	classify := classifySpecFor(t, "laya", map[string]string{"a": "a"})
+	root := &intents.Node{
+		Key:  "root",
+		Kind: intents.KindSlotDAG,
+		Slots: []intents.SlotSpec{
+			{Name: "first", Kind: intents.KindClassify, Classify: classify, Required: true},
+			{Name: "second", Kind: intents.KindClassify, Classify: classifySpecFor(t, "laya2", map[string]string{"a": "a"}), DependsOn: []string{"first"}, Required: true},
+		},
+	}
+	fc1 := &fakeClassifier{err: errors.New("boom")}
+	fc2 := &fakeClassifier{choice: "a", confidence: 1}
+	e := intents.NewEngine()
+	e.RegisterClassifier("laya", fc1)
+	e.RegisterClassifier("laya2", fc2)
+
+	// Setup: "first" fails, so "second" (which depends on it) starts out ReasonUnresolved.
+	prior, _ := e.ResolveState(context.Background(), root, "input", nil)
+
+	answerFirst := intents.Value{Kind: intents.ValueKindChoice, Choice: "a"}
+	answerSecond := intents.Value{Kind: intents.ValueKindChoice, Choice: "explicit", Source: "user"}
+	// "root.first" and "root.second" both answered in the SAME batch: answering "first" would
+	// normally unblock and auto-resolve "second" via its registered backend (laya2/fc2) — but an
+	// explicit answer for "second" is present in this same call, so it must win, and fc2 must
+	// never be invoked for the auto-resolution.
+	state, err := e.ResumeState(context.Background(), root, prior, intents.Answers{
+		"root.first":  {Value: &answerFirst},
+		"root.second": {Value: &answerSecond},
+	})
+	if err != nil {
+		t.Fatalf("ResumeState() error = %v, want nil", err)
+	}
+	if got := state.Values["second"].Choice; got != "explicit" {
+		t.Fatalf("state.Values[second].Choice = %q, want %q (explicit answer)", got, "explicit")
+	}
+	if fc2.callCount() != 0 {
+		t.Fatalf("laya2 Classify call count = %d, want 0 (auto-resolution must not run for an explicitly answered slot)", fc2.callCount())
+	}
+}
+
 func TestResumeState_FailedForAnotherReasonOptionalSlotStaysFailedWhenUnanswered(t *testing.T) {
 	root := &intents.Node{
 		Key:  "root",

@@ -61,7 +61,7 @@ func (e *Engine) ResumeState(ctx context.Context, spec *Node, prior State, answe
 		if ans := answers[path]; ans.Value == nil && ans.Raw == "" {
 			continue // an empty Answer answers nothing; its Failure stays (only reachable for exempt ones)
 		}
-		if err := e.applyAnswer(ctx, spec, &state, path, answers[path]); err != nil {
+		if err := e.applyAnswer(ctx, spec, &state, path, answers[path], answers); err != nil {
 			return state, fmt.Errorf("intents: resume: %w", err)
 		}
 	}
@@ -75,7 +75,9 @@ func (e *Engine) ResumeState(ctx context.Context, spec *Node, prior State, answe
 
 // applyAnswer records one answer at path and continues resolution from it. It returns a non-nil
 // error only for ctx.Err() or a path that no longer maps onto spec (an internal invariant).
-func (e *Engine) applyAnswer(ctx context.Context, spec *Node, state *State, path string, ans Answer) error {
+// answers is the full batch passed to ResumeState, threaded through to resumeUnresolvedSlots so
+// it can skip a slot the caller answered explicitly in this same call (see the ruling there).
+func (e *Engine) applyAnswer(ctx context.Context, spec *Node, state *State, path string, ans Answer, answers Answers) error {
 	node, slot, slotParent, err := resolvePathToNode(spec, path)
 	if err != nil {
 		return err
@@ -129,7 +131,7 @@ func (e *Engine) applyAnswer(ctx context.Context, spec *Node, state *State, path
 		state.Terminal = node.Key
 		return nil
 	}
-	return e.resumeUnresolvedSlots(ctx, slotParent, state, parentPath(path), tier)
+	return e.resumeUnresolvedSlots(ctx, slotParent, state, parentPath(path), tier, answers)
 }
 
 // resumeUnresolvedSlots re-runs, in topological wave order, each slot of n still carrying a
@@ -137,7 +139,19 @@ func (e *Engine) applyAnswer(ctx context.Context, spec *Node, state *State, path
 // touched. One ordered pass reaches the fixpoint: a slot unblocked by an earlier-wave re-run is
 // always visited after it. Slots run sequentially — a resume re-enters only the few slots an
 // answer unblocked, so per-wave fan-out buys nothing here.
-func (e *Engine) resumeUnresolvedSlots(ctx context.Context, n *Node, state *State, path string, tier RiskTier) error {
+//
+// Ruling (not settled by spec.md R11, found in stage-13 validation): a slot with a non-empty
+// Answer in this same ResumeState batch is skipped here even if its dependencies just became
+// satisfied — the caller's explicit answer always wins over same-batch auto-resolution, and
+// auto-resolution never re-runs (or wastefully backend-calls) a slot the caller just told us the
+// answer to. This was chosen over two alternatives: (a) let ResumeState's alphabetical apply
+// order decide who wins, which happens to work today only because dependency keys tend to sort
+// before the slots that depend on them — an accident of iteration order, not a guarantee, and it
+// still burns a real backend call on a result that gets thrown away; and (b) reject a batch that
+// answers both a slot and something it unblocks as caller error — rejected because "here is
+// everything I currently know" (some of it possibly now redundant) is a normal way for a caller
+// to assemble an Answers map from partial UI state, not a mistake.
+func (e *Engine) resumeUnresolvedSlots(ctx context.Context, n *Node, state *State, path string, tier RiskTier, answers Answers) error {
 	waves, err := slotWave(n.Slots)
 	if err != nil {
 		return fmt.Errorf("intents: slot_dag: %w", err)
@@ -146,6 +160,9 @@ func (e *Engine) resumeUnresolvedSlots(ctx context.Context, n *Node, state *Stat
 		for _, idx := range wave {
 			slot := &n.Slots[idx]
 			slotPath := path + "." + slot.Name
+			if a, ok := answers[slotPath]; ok && (a.Value != nil || a.Raw != "") {
+				continue // explicitly answered in this same batch — see the ruling above
+			}
 			unresolved := func(f Failure) bool { return f.Path == slotPath && f.Reason == ReasonUnresolved }
 			if !slices.ContainsFunc(state.Failures, unresolved) || !dependenciesResolved(slot, state.Values) {
 				continue
