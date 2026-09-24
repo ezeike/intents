@@ -2,6 +2,7 @@ package intents
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -139,4 +140,22 @@ func effectiveRiskTier(nodeTier, ancestorTier RiskTier) RiskTier {
 		return nodeTier
 	}
 	return ancestorTier
+}
+
+// resolveLookup resolves one lookup spec against its registered Lookuper (spec.md R4). A lookup
+// Failure never carries a Candidate; the caller has already verified ls.Backend is registered.
+func (e *Engine) resolveLookup(ctx context.Context, ls *LookupSpec, query string, grounding any) (Value, *Failure) {
+	l, _ := e.lookuper(ls.Backend) // registration pre-checked by the caller (spec.md R9)
+	entity, err := l.Lookup(ctx, query, ls.Index, grounding)
+	if err != nil {
+		reason := ReasonBackendError
+		if errors.Is(err, ErrNotFound) {
+			reason = ReasonNotFound
+		}
+		return Value{}, &Failure{Reason: reason, Err: fmt.Errorf("intents: lookup: %w", err)}
+	}
+	if entity.ID == "" {
+		return Value{}, &Failure{Reason: ReasonNotFound, Err: fmt.Errorf("intents: lookup: %w", ErrNotFound)}
+	}
+	return Value{Kind: ValueKindEntity, Entity: &entity, Confidence: 0, Source: ls.Backend}, nil
 }
