@@ -70,6 +70,36 @@ func TestClient_SystemOne_SendsStateAndQuestionsAndDecodesChoice(t *testing.T) {
 	}
 }
 
+func TestClient_SystemOne_AuthorizationHeader(t *testing.T) {
+	tests := []struct {
+		name   string
+		apiKey string
+		want   string
+	}{
+		{name: "api key set sends bearer", apiKey: "sk-test", want: "Bearer sk-test"},
+		{name: "no api key sends no header", apiKey: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.Header.Get("Authorization")
+				json.NewEncoder(w).Encode(map[string]any{"answers": map[string]any{}})
+			}))
+			defer srv.Close()
+
+			c := laya.NewClient(srv.URL)
+			c.APIKey = tt.apiKey
+			if _, err := c.SystemOne(context.Background(), laya.Request{}); err != nil {
+				t.Fatalf("SystemOne() error = %v, want nil", err)
+			}
+			if got != tt.want {
+				t.Fatalf("Authorization = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClient_SystemOne_400StatusWrapsErrBadRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)

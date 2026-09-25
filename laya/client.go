@@ -17,6 +17,17 @@ type Client struct {
 	// HTTPClient sends every request. Must be non-nil; NewClient defaults it to
 	// http.DefaultClient.
 	HTTPClient *http.Client
+
+	// APIKey, when non-empty, is sent as "Authorization: Bearer <APIKey>" on every request —
+	// required by hosted Jev endpoints (TypeSafe, OpenRouter, Vercel AI Gateway); a self-hosted
+	// laya-serve needs none.
+	APIKey string
+}
+
+func (c *Client) setAuth(req *http.Request) {
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
 }
 
 // NewClient constructs a Client against baseURL with http.DefaultClient. Set Client.HTTPClient
@@ -126,6 +137,7 @@ func (c *Client) SystemOne(ctx context.Context, req Request) (Response, error) {
 		return Response{}, fmt.Errorf("laya: build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	c.setAuth(httpReq)
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
@@ -179,6 +191,7 @@ func (c *Client) Healthy(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("laya: build health request: %w", err)
 	}
+	c.setAuth(httpReq)
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("laya: health check: %w", err)
