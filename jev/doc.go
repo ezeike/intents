@@ -56,12 +56,25 @@
 //     every error as {"error":{"message":...,"code":N}} rather than Laya's flat {"detail":...} —
 //     see Client.SystemOne's doc comment and errorDetail.
 //
+// The confidence-vs-margin question doc comment above raises was also run — with an inconclusive
+// result, reported honestly rather than papered over.
+// tests/integration/jev/confidence_calibration_test.go reused Laya's exact 30-case
+// accept_proposal/discard_proposal/propose_spec gold set (see the laya skill), and
+// general_accept_reject_test.go reused Laya's domain-neutral 20-case accept/reject set (which
+// includes "I'll pass," a case Laya itself gets wrong). Jev scored **30/30 and 20/20** on both —
+// including "I'll pass" — versus Laya's 29/30 and 19/20 on the identical inputs. With zero
+// incorrect answers in either run, there was nothing to separate: both the server's own
+// `confidence` and the top-two margin sat at ~0.99-1.0 across every case, correct or not
+// applicable. This neither confirms nor refutes keeping margin as ChoiceAnswer.Confidence — it
+// means both of Laya's own gold sets are too easy for Jev to be useful calibration benchmarks.
+// Measuring this for real needs a harder set that actually produces Jev mistakes (a wider option
+// count, more genuinely ambiguous phrasing, or an out-of-scope-detection-style set) — none of
+// which exists here yet.
+//
 // # What's still genuinely not done
 //
-// The confidence-calibration measurement itself: tests/integration/jev checks that the wire
-// protocol works, not whether Jev's confidence is actually better-separated than Laya's raw
-// confidence field for any real option set — nothing here does what
-// tests/integration/laya/confidence_calibration_test.go did for Laya. No retry/backoff for a
+// A real confidence-vs-margin measurement (see above — the two gold sets tried so far were both
+// too easy to produce any Jev errors to measure separation against). No retry/backoff for a
 // hosted, rate-limited endpoint — a caller wanting either supplies its own http.RoundTripper via
 // Client.HTTPClient. No cross-question batching beyond one Client.SystemOne call — same
 // KindCustom escape hatch as intents/laya (design spec decision 14) applies here too.
