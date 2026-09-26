@@ -6,9 +6,12 @@ import "errors"
 // errors.Is.
 //
 // Status-code mapping below mirrors intents/laya's, since Jev is documented as speaking the same
-// /v1/systemone protocol Laya was built compatible with — but this mapping has not been confirmed
-// against a live Jev response (see doc.go's "What's still genuinely not done"). Treat it as a
-// best-effort default, not a verified contract, until it's checked against a real endpoint.
+// /v1/systemone protocol Laya was built compatible with. Confirmed live against
+// https://openrouter.ai/api/v1/systemone (tests/integration/jev) for 400/401 — but that route
+// never returned 422 for either a malformed-shape or semantically-invalid request in testing, both
+// came back 400 (see Client.SystemOne's doc comment) — ErrInvalidQuestion may not be reachable
+// through OpenRouter specifically. 413/429 are untested (no request in the suite was built large
+// or frequent enough to trigger them).
 var (
 	// ErrBadRequest wraps a 400 response: a structurally malformed request (bad JSON, missing or
 	// wrong-shaped "questions").

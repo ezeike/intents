@@ -41,12 +41,28 @@
 // "treat third-party benchmark/review claims about either as unverified" note, written before
 // either model had been in general use for even two weeks).
 //
+// # Confirmed against a live endpoint
+//
+// tests/integration/jev runs this package's own Client/Classifier against Jev via OpenRouter
+// (https://openrouter.ai/api, model "~typesafe/jev-latest" — the same route
+// block-builder/internal/decisionmodel uses in production). Two things that started as
+// assumptions above are now confirmed, not just carried over from Laya's behavior:
+//
+//   - noul answers from this route omit "confidence" entirely (bare {"type":"noul","noul":p}),
+//     the same gap the laya skill documents for CLM — Response.Noul's NoulConfidence fallback is
+//     exercised for real here, not just defensive code.
+//   - Unlike self-hosted Laya (400 malformed-shape vs 422 semantically-invalid), OpenRouter's Jev
+//     gateway returns 400 for both a missing required field and an empty criteria map, and wraps
+//     every error as {"error":{"message":...,"code":N}} rather than Laya's flat {"detail":...} —
+//     see Client.SystemOne's doc comment and errorDetail.
+//
 // # What's still genuinely not done
 //
-// No integration test suite against a live Jev endpoint exists yet (intents/laya has one under
-// tests/integration/laya/ against a self-hosted server; nothing comparable exists for Jev here) —
-// this package is untested against real Jev traffic. No retry/backoff for a hosted, rate-limited
-// endpoint — a caller wanting either supplies its own http.RoundTripper via Client.HTTPClient. No
-// cross-question batching beyond one Client.SystemOne call — same KindCustom escape hatch as
-// intents/laya (design spec decision 14) applies here too.
+// The confidence-calibration measurement itself: tests/integration/jev checks that the wire
+// protocol works, not whether Jev's confidence is actually better-separated than Laya's raw
+// confidence field for any real option set — nothing here does what
+// tests/integration/laya/confidence_calibration_test.go did for Laya. No retry/backoff for a
+// hosted, rate-limited endpoint — a caller wanting either supplies its own http.RoundTripper via
+// Client.HTTPClient. No cross-question batching beyond one Client.SystemOne call — same
+// KindCustom escape hatch as intents/laya (design spec decision 14) applies here too.
 package jev

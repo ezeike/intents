@@ -98,8 +98,26 @@ type NoulAnswer struct {
 	Confidence float64 `json:"confidence"`
 }
 
+// errorDetail decodes either a bare Jev-shaped error body ({"detail":"..."}, matching Laya's own
+// convention) or an OpenRouter-gateway-wrapped one ({"error":{"message":"...","code":N}}) —
+// confirmed live against https://openrouter.ai/api/v1/systemone (tests/integration/jev): every
+// error OpenRouter's gateway returns for this endpoint uses the wrapped shape, including ones that
+// just relay a plain-Jev {"detail":...} body as a quoted string inside "message".
 type errorDetail struct {
 	Detail string `json:"detail"`
+	Error  *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func (e errorDetail) text() string {
+	if e.Detail != "" {
+		return e.Detail
+	}
+	if e.Error != nil && e.Error.Message != "" {
+		return e.Error.Message
+	}
+	return ""
 }
 
 // SystemOne calls POST /v1/systemone with req and decodes its response. ctx governs the
@@ -108,9 +126,17 @@ type errorDetail struct {
 // can rate-limit, see ErrRateLimited) supplies its own http.RoundTripper via Client.HTTPClient.
 //
 // A non-2xx response is translated to one of ErrBadRequest (400), ErrUnauthorized (401/403),
-// ErrInvalidQuestion (422), ErrLimitExceeded (413), or ErrRateLimited (429), wrapping the server's
-// own "detail" text when present, so callers can distinguish them with errors.Is rather than
-// matching status codes themselves.
+// ErrInvalidQuestion (422), ErrLimitExceeded (413), or ErrRateLimited (429), wrapping the
+// server's error text when present (either a bare Jev {"detail":...} body or an
+// OpenRouter-gateway {"error":{"message":...}} wrapper — see errorDetail), so callers can
+// distinguish them with errors.Is rather than matching status codes themselves.
+//
+// Confirmed live against https://openrouter.ai/api/v1/systemone (tests/integration/jev): unlike
+// self-hosted Laya, which splits malformed-shape errors (400) from semantically-invalid ones
+// (422), OpenRouter's Jev gateway returns 400 for both a missing required field (e.g. a "choice"
+// question with no instructions) and an empty criteria map — ErrInvalidQuestion may simply never
+// fire against this route. Don't assume 422 is reachable through OpenRouter; check ErrBadRequest
+// too for anything a self-hosted Jev-protocol server would 422 on.
 func (c *Client) SystemOne(ctx context.Context, req Request) (Response, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -165,8 +191,10 @@ func sentinelForStatus(status int) error {
 
 func detailOrBody(data []byte) string {
 	var e errorDetail
-	if err := json.Unmarshal(data, &e); err == nil && e.Detail != "" {
-		return e.Detail
+	if err := json.Unmarshal(data, &e); err == nil {
+		if text := e.text(); text != "" {
+			return text
+		}
 	}
 	return string(data)
 }
